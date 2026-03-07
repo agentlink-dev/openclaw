@@ -1,5 +1,5 @@
 {
-  "name": "@agentlinkdev/openclaw",
+  "name": "@agentlinkdev/agentlink",
   "version": "0.1.0",
   "description": "Agent-to-agent coordination for OpenClaw",
   "main": "src/index.ts",
