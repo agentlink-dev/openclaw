@@ -37,7 +37,7 @@ export function resolveConfig(rawConfig: Record<string, unknown>): AgentLinkConf
     brokerUsername: cfg.brokerUsername as string | undefined,
     brokerPassword: cfg.brokerPassword as string | undefined,
     agent: {
-      id: agent?.id as string,
+      id: (agent?.id as string) ?? `agent-${os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, "")}-${process.pid}`,
       description: agent?.description as string | undefined,
       capabilities,
     },

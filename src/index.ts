@@ -21,9 +21,13 @@ interface PluginApi {
   registerService(service: { id: string; start: () => Promise<void>; stop: () => Promise<void> }): void;
   registerTool(tool: {
     name: string;
+    label: string;
     description: string;
-    parameters: Record<string, unknown>;
-    execute: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    parameters: unknown;
+    execute: (_id: string, params: Record<string, unknown>) => Promise<{
+      content: Array<{ type: "text"; text: string }>;
+      details: unknown;
+    }>;
   }): void;
   registerChannel?(registration: { plugin: unknown }): void;
   registerCli?(registrar: (ctx: { program: unknown }) => void, opts?: { commands?: string[] }): void;
@@ -38,10 +42,17 @@ interface PluginApi {
 }
 
 // ---------------------------------------------------------------------------
-// Plugin entry point
+// Plugin definition object (preferred OC pattern)
 // ---------------------------------------------------------------------------
 
-export default function register(api: PluginApi) {
+export default {
+  id: "agentlink",
+  name: "AgentLink",
+  description: "Agent-to-agent coordination over MQTT",
+  register,
+};
+
+function register(api: PluginApi) {
   const config = resolveConfig(api.pluginConfig ?? {});
   const contacts = createContacts(config.dataDir);
   const state = createState(config.dataDir);
@@ -176,7 +187,7 @@ export default function register(api: PluginApi) {
         if (!group) continue;
         prompt += `Active: "${group.goal}" | Done when: "${group.done_when}" | Idle turns: ${group.idle_turns}/3\n`;
         if (group.idle_turns >= 3) {
-          prompt += `  ⚠ WARNING: 3 idle turns reached. You MUST take concrete action NOW.\n`;
+          prompt += `  WARNING: 3 idle turns reached. You MUST take concrete action NOW.\n`;
         }
       }
 
@@ -220,6 +231,3 @@ export default function register(api: PluginApi) {
     );
   }
 }
-
-export const id = "agentlink";
-export const name = "AgentLink";

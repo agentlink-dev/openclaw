@@ -1,5 +1,6 @@
+import { Type } from "@sinclair/typebox";
 import { v4 as uuid } from "uuid";
-import type { AgentLinkConfig, AgentStatus, MessageEnvelope } from "./types.js";
+import type { AgentLinkConfig, AgentStatus } from "./types.js";
 import { createEnvelope, TOPICS } from "./types.js";
 import type { StateManager } from "./state.js";
 import type { ContactsManager } from "./contacts.js";
@@ -8,16 +9,20 @@ import type { InviteManager } from "./invite.js";
 import type { JobManager } from "./jobs.js";
 import type { Logger } from "./mqtt-client.js";
 
-export interface ToolRegistrar {
-  registerTool(tool: AgentTool): void;
+// ---------------------------------------------------------------------------
+// Tool result helper
+// ---------------------------------------------------------------------------
+
+function json(data: Record<string, unknown>) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+    details: data,
+  };
 }
 
-export interface AgentTool {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  execute: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
-}
+// ---------------------------------------------------------------------------
+// Publish agent status to group
+// ---------------------------------------------------------------------------
 
 async function publishStatus(
   config: AgentLinkConfig,
@@ -44,6 +49,63 @@ async function publishStatus(
   );
 }
 
+// ---------------------------------------------------------------------------
+// TypeBox Schemas
+// ---------------------------------------------------------------------------
+
+const CoordinateSchema = Type.Object({
+  goal: Type.String({ description: "What the user wants to accomplish" }),
+  done_when: Type.Optional(
+    Type.String({ description: "How to know when this is complete" }),
+  ),
+  participants: Type.Array(Type.String(), {
+    description: "Names or agent IDs of people to coordinate with",
+  }),
+});
+
+const SubmitJobSchema = Type.Object({
+  group_id: Type.String({ description: "The active group/coordination ID" }),
+  capability: Type.String({
+    description: "The capability to request (e.g. 'check_calendar')",
+  }),
+  target_agent: Type.Optional(
+    Type.String({
+      description: "Specific agent ID to target (optional — if omitted, routes by capability)",
+    }),
+  ),
+  text: Type.String({
+    description: "Natural language description of what you need",
+  }),
+});
+
+const InviteAgentSchema = Type.Object({
+  group_id: Type.String({ description: "The active group/coordination ID" }),
+  name_or_agent_id: Type.String({
+    description: "Contact name (e.g. 'Sara') or agent ID (e.g. 'sara-macbook')",
+  }),
+});
+
+const JoinGroupSchema = Type.Object({
+  invite_code: Type.String({
+    description: "The 6-character invite code (e.g. 'AB3X7K')",
+  }),
+});
+
+const CompleteSchema = Type.Object({
+  group_id: Type.String({ description: "The active group/coordination ID" }),
+  summary: Type.String({ description: "Final outcome summary" }),
+  success: Type.Optional(
+    Type.Boolean({
+      description: "Whether the goal was achieved",
+      default: true,
+    }),
+  ),
+});
+
+// ---------------------------------------------------------------------------
+// createTools
+// ---------------------------------------------------------------------------
+
 export function createTools(
   config: AgentLinkConfig,
   state: StateManager,
@@ -52,7 +114,7 @@ export function createTools(
   invites: InviteManager,
   jobs: JobManager,
   logger: Logger,
-): AgentTool[] {
+) {
   function log(msg: string) {
     if (config.outputMode === "debug") {
       logger.info(`[AgentLink] ${msg}`);
@@ -62,30 +124,13 @@ export function createTools(
   // -----------------------------------------------------------------------
   // agentlink_coordinate
   // -----------------------------------------------------------------------
-  const coordinateTool: AgentTool = {
+  const coordinateTool = {
     name: "agentlink_coordinate",
+    label: "Coordinate",
     description:
       "Start coordinating with other people's agents. Use this when the user wants to do something that involves other people.",
-    parameters: {
-      type: "object",
-      required: ["goal", "participants"],
-      properties: {
-        goal: {
-          type: "string",
-          description: "What the user wants to accomplish",
-        },
-        done_when: {
-          type: "string",
-          description: "How to know when this is complete",
-        },
-        participants: {
-          type: "array",
-          items: { type: "string" },
-          description: "Names or agent IDs of people to coordinate with",
-        },
-      },
-    },
-    async execute(params) {
+    parameters: CoordinateSchema,
+    async execute(_id: string, params: Record<string, unknown>) {
       const goal = params.goal as string;
       const doneWhen = (params.done_when as string) ?? `${goal} — completed to user's satisfaction`;
       const participants = params.participants as string[];
@@ -97,9 +142,9 @@ export function createTools(
 
       const unresolved = resolved.filter((r) => !r.agentId);
       if (unresolved.length > 0) {
-        return {
+        return json({
           error: `Unknown contacts: ${unresolved.map((u) => u.name).join(", ")}. Ask the user for their agent ID, or use agentlink_invite_agent with an agent_id.`,
-        };
+        });
       }
 
       const participantIds = resolved.map((r) => r.agentId!);
@@ -126,46 +171,29 @@ export function createTools(
         log(`Invite sent to ${contacts.getNameByAgentId(pid) ?? pid}`);
       }
 
-      return {
+      return json({
         group_id: groupId,
         intent_id: intentId,
         participants: participantIds,
         status: "invites_sent",
         message: `Coordination started. Waiting for ${participantIds.length} agent(s) to join.`,
-      };
+      });
     },
   };
 
   // -----------------------------------------------------------------------
   // agentlink_submit_job
   // -----------------------------------------------------------------------
-  const submitJobTool: AgentTool = {
+  const submitJobTool = {
     name: "agentlink_submit_job",
+    label: "Submit Job",
     description:
       "Send a specific task to another agent. Use this to request actions like checking a calendar, searching for restaurants, etc.",
-    parameters: {
-      type: "object",
-      required: ["group_id", "capability", "text"],
-      properties: {
-        group_id: { type: "string", description: "The active group/coordination ID" },
-        capability: {
-          type: "string",
-          description: "The capability to request (e.g. 'check_calendar')",
-        },
-        target_agent: {
-          type: "string",
-          description: "Specific agent ID to target (optional — if omitted, routes by capability)",
-        },
-        text: {
-          type: "string",
-          description: "Natural language description of what you need",
-        },
-      },
-    },
-    async execute(params) {
+    parameters: SubmitJobSchema,
+    async execute(_id: string, params: Record<string, unknown>) {
       const groupId = params.group_id as string;
       const group = state.getGroup(groupId);
-      if (!group) return { error: "Group not found or already closed" };
+      if (!group) return json({ error: "Group not found or already closed" });
 
       const correlationId = await jobs.submitJob({
         groupId,
@@ -177,74 +205,57 @@ export function createTools(
 
       state.resetIdleTurns(groupId);
 
-      return {
+      return json({
         correlation_id: correlationId,
         status: "requested",
         message: `Job sent: ${params.capability}. Waiting for response (timeout: ${config.jobTimeoutMs / 1000}s).`,
-      };
+      });
     },
   };
 
   // -----------------------------------------------------------------------
   // agentlink_invite_agent
   // -----------------------------------------------------------------------
-  const inviteAgentTool: AgentTool = {
+  const inviteAgentTool = {
     name: "agentlink_invite_agent",
+    label: "Invite Agent",
     description:
       "Invite someone to join a coordination group. Use when adding new participants mid-coordination.",
-    parameters: {
-      type: "object",
-      required: ["group_id", "name_or_agent_id"],
-      properties: {
-        group_id: { type: "string" },
-        name_or_agent_id: {
-          type: "string",
-          description: "Contact name (e.g. 'Sara') or agent ID (e.g. 'sara-macbook')",
-        },
-      },
-    },
-    async execute(params) {
+    parameters: InviteAgentSchema,
+    async execute(_id: string, params: Record<string, unknown>) {
       const groupId = params.group_id as string;
       const group = state.getGroup(groupId);
-      if (!group) return { error: "Group not found" };
+      if (!group) return json({ error: "Group not found" });
 
       const nameOrId = params.name_or_agent_id as string;
       const agentId = contacts.resolve(nameOrId);
       if (!agentId) {
-        return { error: `Unknown contact: ${nameOrId}. Ask the user for their agent ID.` };
+        return json({ error: `Unknown contact: ${nameOrId}. Ask the user for their agent ID.` });
       }
 
       await invites.sendDirectInvite(agentId, groupId, group.goal, group.done_when);
       log(`Invite sent to ${nameOrId}`);
 
-      return {
+      return json({
         group_id: groupId,
         invited: agentId,
         status: "invite_sent",
-      };
+      });
     },
   };
 
   // -----------------------------------------------------------------------
   // agentlink_join_group
   // -----------------------------------------------------------------------
-  const joinGroupTool: AgentTool = {
+  const joinGroupTool = {
     name: "agentlink_join_group",
+    label: "Join Group",
     description: "Join a coordination group using an invite code that was shared with you.",
-    parameters: {
-      type: "object",
-      required: ["invite_code"],
-      properties: {
-        invite_code: {
-          type: "string",
-          description: "The 6-character invite code (e.g. 'AB3X7K')",
-        },
-      },
-    },
-    async execute(params) {
+    parameters: JoinGroupSchema,
+    async execute(_id: string, params: Record<string, unknown>) {
       const code = params.invite_code as string;
       const invite = await invites.resolveInviteCode(code);
-      if (!invite) return { error: "Invalid or expired invite code" };
+      if (!invite) return json({ error: "Invalid or expired invite code" });
 
       const groupId = invite.group_id;
 
@@ -276,51 +287,36 @@ export function createTools(
         contacts.add(invite.from, invite.from);
       }
 
-      return {
+      return json({
         group_id: groupId,
         driver: invite.from,
         goal: invite.goal,
         status: "joined",
-      };
+      });
     },
   };
 
   // -----------------------------------------------------------------------
   // agentlink_complete
   // -----------------------------------------------------------------------
-  const completeTool: AgentTool = {
+  const completeTool = {
     name: "agentlink_complete",
+    label: "Complete",
     description:
       "Declare that the coordination is complete. Only call this when the goal has been achieved or explicitly abandoned.",
-    parameters: {
-      type: "object",
-      required: ["group_id", "summary"],
-      properties: {
-        group_id: { type: "string" },
-        summary: {
-          type: "string",
-          description: "Final outcome summary",
-        },
-        success: {
-          type: "boolean",
-          description: "Whether the goal was achieved",
-          default: true,
-        },
-      },
-    },
-    async execute(params) {
+    parameters: CompleteSchema,
+    async execute(_id: string, params: Record<string, unknown>) {
       const groupId = params.group_id as string;
       const summary = params.summary as string;
       const success = (params.success as boolean) ?? true;
 
       const group = state.getGroup(groupId);
-      if (!group) return { error: "Group not found" };
+      if (!group) return json({ error: "Group not found" });
 
       if (group.driver !== config.agent.id) {
-        return { error: "Only the driver agent can complete a coordination" };
+        return json({ error: "Only the driver agent can complete a coordination" });
       }
 
-      // 1. Publish completion message
       const completionMsg = createEnvelope(config.agent.id, {
         group_id: groupId,
         to: "group",
@@ -332,26 +328,23 @@ export function createTools(
       });
       await mqtt.publishEnvelope(TOPICS.groupSystem(groupId), completionMsg);
 
-      // 2. Unsubscribe from group
       await mqtt.unsubscribeGroup(groupId);
 
-      // 3. Delete retained status (publish empty retained message)
       await mqtt.publish(
         TOPICS.groupStatus(groupId, config.agent.id),
         "",
         { retain: true },
       );
 
-      // 4. Remove from local state
       state.removeGroup(groupId);
 
       log(`Coordination complete: ${summary}`);
 
-      return {
+      return json({
         group_id: groupId,
         status: success ? "completed" : "failed",
         summary,
-      };
+      });
     },
   };
 
