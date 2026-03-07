@@ -207,10 +207,17 @@ export function createTools(
 
       state.resetIdleTurns(groupId);
 
+      // Include available capabilities so the agent knows what else it can request
+      const allCaps = group.participant_capabilities ?? {};
+      const capList = Object.entries(allCaps).flatMap(([agentId, caps]) =>
+        caps.map(c => `${contacts.getNameByAgentId(agentId) ?? agentId}: ${c.name} — ${c.description}`)
+      );
+
       return json({
         correlation_id: correlationId,
         status: "requested",
         message: `Job sent: ${params.capability}. Waiting for response (timeout: ${config.jobTimeoutMs / 1000}s).`,
+        ...(capList.length > 0 ? { available_capabilities: capList } : {}),
       });
     },
   };

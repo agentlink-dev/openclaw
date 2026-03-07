@@ -6,7 +6,8 @@ import { createMqttService } from "./mqtt-service.js";
 import { createInviteManager } from "./invite.js";
 import { createJobManager } from "./jobs.js";
 import { createTools } from "./tools.js";
-import { createChannelPlugin } from "./channel.js";
+import { createChannelPlugin, createChannelInbound } from "./channel.js";
+import type { ChannelApi, ChannelInbound } from "./channel.js";
 import { shouldProcess } from "./routing.js";
 import type { Logger } from "./mqtt-client.js";
 
@@ -38,6 +39,7 @@ interface PluginApi {
       params: Record<string, unknown>;
       ctx?: unknown;
     }): Promise<unknown>;
+    channel?: ChannelApi;
   };
 }
 
@@ -81,6 +83,15 @@ function register(api: PluginApi) {
 
   const jobs = createJobManager(config, state, mqttService, logger, executeTool);
 
+  // Channel inbound: wakes agent when MQTT events arrive (autonomous coordination)
+  const channelInbound: ChannelInbound | null = api.runtime?.channel
+    ? createChannelInbound(config, state, contacts, mqttService, api.runtime.channel, api.config, logger)
+    : null;
+
+  if (!channelInbound) {
+    logger.warn("[AgentLink] Channel inbound API not available. Autonomous coordination disabled.");
+  }
+
   // Wire inbound message handling
   mqttService.onGroupMessage((msg) => {
     // Check if this agent should process the message
@@ -95,7 +106,28 @@ function register(api: PluginApi) {
 
     if (msg.type === "job_response" && msg.correlation_id && state.hasPendingJob(msg.correlation_id)) {
       jobs.handleJobResponse(msg);
+      // Wake agent with the response
+      if (channelInbound) {
+        const name = contacts.getNameByAgentId(msg.from) ?? msg.from;
+        const cap = msg.payload.capability ?? "unknown";
+        const result = msg.payload.result ?? msg.payload.text ?? "(no text)";
+        channelInbound.dispatch(msg.group_id,
+          `[AgentLink] ${name} responded to ${cap}:\n${result}`,
+          msg.from);
+      }
       return;
+    }
+
+    // Chat from participant — wake agent if we're the driver
+    if (msg.type === "chat" && channelInbound) {
+      const group = state.getGroup(msg.group_id);
+      if (group && group.driver === config.agent.id) {
+        const name = contacts.getNameByAgentId(msg.from) ?? msg.from;
+        channelInbound.dispatch(msg.group_id,
+          `[AgentLink] ${name}: ${msg.payload.text ?? "(no text)"}`,
+          msg.from);
+        return;
+      }
     }
 
     // General coordination message — log it
@@ -106,40 +138,95 @@ function register(api: PluginApi) {
   mqttService.onInboxMessage((_topic, raw) => {
     const msg = raw as Record<string, unknown>;
     if (msg.type === "invite") {
-      log(`Invite received from ${msg.from}: "${msg.goal}"`);
-      // For V1: auto-join if from known contact
       const fromId = msg.from as string;
-      if (contacts.resolve(fromId)) {
-        log(`Auto-joining (known contact: ${contacts.getNameByAgentId(fromId) ?? fromId})`);
-        // Auto-join logic handled by the agent's LLM calling agentlink_join_group
-        // or we could auto-accept here for known contacts
+      const goal = msg.goal as string;
+      const name = contacts.getNameByAgentId(fromId) ?? fromId;
+      log(`Invite received from ${name}: "${goal}"`);
+
+      if (channelInbound && contacts.resolve(fromId)) {
+        const groupId = msg.group_id as string;
+        channelInbound.dispatch(groupId,
+          `[AgentLink] Invite from ${name}: "${goal}"\nThis is a known contact. Call agentlink_join_group with invite code or use agentlink_coordinate to start your own group.`,
+          fromId);
+      }
+    }
+  });
+
+  // Status updates: track participant capabilities
+  mqttService.onStatusUpdate((raw) => {
+    const status = raw as Record<string, unknown>;
+    if (!status || typeof status !== "object") return;
+    const agentId = status.agent_id as string;
+    if (!agentId || agentId === config.agent.id) return;
+
+    const capabilities = status.capabilities as Array<{ name: string; description: string }> | undefined;
+    if (!capabilities || !Array.isArray(capabilities)) return;
+
+    // Update capabilities for all active groups this agent is in
+    for (const groupId of state.getActiveGroups()) {
+      const group = state.getGroup(groupId);
+      if (group && group.participants.includes(agentId)) {
+        state.updateParticipantCapabilities(groupId, agentId, capabilities);
       }
     }
   });
 
   mqttService.onSystemEvent((raw) => {
     const msg = raw as Record<string, unknown>;
-    if (msg && typeof msg === "object" && "type" in msg) {
-      const envelope = msg as Record<string, unknown>;
-      if (envelope.type === "join") {
-        const from = envelope.from as string;
-        const groupId = envelope.group_id as string;
-        const group = state.getGroup(groupId);
-        if (group && !group.participants.includes(from)) {
-          group.participants.push(from);
-          state.updateGroup(groupId, { participants: group.participants });
-        }
-        log(`${contacts.getNameByAgentId(from) ?? from} joined group ${groupId}`);
+    if (!msg || typeof msg !== "object" || !("type" in msg)) return;
+    const envelope = msg as Record<string, unknown>;
+
+    if (envelope.type === "join") {
+      const from = envelope.from as string;
+      if (from === config.agent.id) return; // ignore own join
+      const groupId = envelope.group_id as string;
+      const group = state.getGroup(groupId);
+      if (!group) return;
+
+      if (!group.participants.includes(from)) {
+        group.participants.push(from);
+        state.updateGroup(groupId, { participants: group.participants });
       }
-      if (envelope.type === "leave") {
-        const groupId = envelope.group_id as string;
-        // If this is a completion message from the driver, clean up
-        const group = state.getGroup(groupId);
-        if (group && envelope.from !== config.agent.id) {
-          mqttService.unsubscribeGroup(groupId);
-          state.removeGroup(groupId);
-          log(`Group ${groupId} closed by driver`);
+
+      const name = contacts.getNameByAgentId(from) ?? from;
+      log(`${name} joined group ${groupId}`);
+
+      // Wake agent with join notification + capabilities
+      if (channelInbound && group.driver === config.agent.id) {
+        const caps = state.getParticipantCapabilities(groupId, from);
+        const capList = caps && caps.length > 0
+          ? caps.map(c => `${c.name}: ${c.description}`).join(", ")
+          : "unknown (capabilities will appear when their status is published)";
+        channelInbound.dispatch(groupId, [
+          `[AgentLink] ${name} joined the coordination.`,
+          `Capabilities: ${capList}`,
+          `Goal: ${group.goal}`,
+          `Done when: ${group.done_when}`,
+          `Participants: ${group.participants.map(p => contacts.getNameByAgentId(p) ?? p).join(", ")}`,
+          ``,
+          `You are the driver. Submit jobs to ${name} using agentlink_submit_job with their capabilities.`,
+          `When done_when is met, call agentlink_complete.`,
+        ].join("\n"), from);
+      }
+    }
+
+    if (envelope.type === "leave") {
+      const groupId = envelope.group_id as string;
+      const from = envelope.from as string;
+      const group = state.getGroup(groupId);
+
+      if (group && from !== config.agent.id) {
+        // Wake agent with completion notification before cleanup
+        if (channelInbound && group.driver !== config.agent.id) {
+          const name = contacts.getNameByAgentId(from) ?? from;
+          const summary = (envelope.payload as Record<string, unknown>)?.text as string ?? "";
+          channelInbound.dispatch(groupId,
+            `[AgentLink] Coordination completed by ${name}: ${summary}`,
+            from);
         }
+        mqttService.unsubscribeGroup(groupId);
+        state.removeGroup(groupId);
+        log(`Group ${groupId} closed by driver`);
       }
     }
   });
@@ -184,7 +271,10 @@ function register(api: PluginApi) {
         }
       }
     },
-    stop: () => mqttService.stop(),
+    stop: () => {
+      channelInbound?.shutdown();
+      return mqttService.stop();
+    },
   });
 
   // Register the 5 agent tools

@@ -1,9 +1,48 @@
-import type { AgentLinkConfig, MessageEnvelope } from "./types.js";
+import type { AgentLinkConfig } from "./types.js";
 import { createEnvelope, TOPICS } from "./types.js";
 import type { StateManager } from "./state.js";
 import type { ContactsManager } from "./contacts.js";
 import type { MqttService } from "./mqtt-service.js";
 import type { Logger } from "./mqtt-client.js";
+
+// ---------------------------------------------------------------------------
+// OC Channel Runtime API types (subset used by AgentLink inbound dispatch)
+// ---------------------------------------------------------------------------
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export interface ChannelApi {
+  reply: {
+    dispatchReplyWithBufferedBlockDispatcher(params: {
+      ctx: Record<string, any>;
+      cfg: Record<string, any>;
+      dispatcherOptions: {
+        deliver: (payload: { text?: string; mediaUrl?: string; isError?: boolean; isReasoning?: boolean }, info: { kind: "tool" | "block" | "final" }) => Promise<void>;
+        onError?: (err: unknown, info: { kind: string }) => void;
+        onReplyStart?: () => Promise<void> | void;
+      };
+      replyOptions?: { disableBlockStreaming?: boolean };
+    }): Promise<{ queuedFinal: boolean }>;
+    finalizeInboundContext(ctx: Record<string, any>): Record<string, any>;
+  };
+  session: {
+    recordInboundSession(params: {
+      storePath: string;
+      sessionKey: string;
+      ctx: Record<string, any>;
+      onRecordError: (err: unknown) => void;
+    }): Promise<void>;
+    resolveStorePath(storeConfig: unknown, opts: { agentId: string }): string;
+  };
+  routing: {
+    resolveAgentRoute(input: {
+      cfg: Record<string, any>;
+      channel: string;
+      accountId?: string;
+      peer?: { kind: string; id: string };
+    }): { agentId: string; sessionKey: string; channel: string; accountId: string };
+  };
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 export interface ChannelPlugin {
   id: string;
@@ -86,6 +125,146 @@ export function createChannelPlugin(
 
         return { ok: true };
       },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Channel Inbound — wakes the agent when MQTT events arrive
+// ---------------------------------------------------------------------------
+
+export interface ChannelInbound {
+  dispatch(groupId: string, body: string, senderAgentId?: string): void;
+  shutdown(): void;
+}
+
+const DEBOUNCE_MS = 1500;
+
+export function createChannelInbound(
+  config: AgentLinkConfig,
+  state: StateManager,
+  contacts: ContactsManager,
+  mqtt: MqttService,
+  channelApi: ChannelApi,
+  ocConfig: Record<string, unknown>,
+  logger: Logger,
+): ChannelInbound {
+  // Per-group dispatch queue: serializes dispatches to prevent concurrent agent turns
+  const dispatchQueues = new Map<string, Promise<void>>();
+
+  function enqueueDispatch(groupId: string, fn: () => Promise<void>): void {
+    const prev = dispatchQueues.get(groupId) ?? Promise.resolve();
+    const next = prev.then(fn, fn); // always continue even if previous failed
+    dispatchQueues.set(groupId, next);
+  }
+
+  // Debounce: coalesce rapid events per group into one inbound message
+  const pendingEvents = new Map<string, Array<{ body: string; senderAgentId?: string }>>();
+  const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function scheduleDebounced(groupId: string, body: string, senderAgentId?: string) {
+    if (!pendingEvents.has(groupId)) pendingEvents.set(groupId, []);
+    pendingEvents.get(groupId)!.push({ body, senderAgentId });
+
+    const existing = debounceTimers.get(groupId);
+    if (existing) clearTimeout(existing);
+
+    debounceTimers.set(groupId, setTimeout(() => {
+      const events = pendingEvents.get(groupId) ?? [];
+      pendingEvents.delete(groupId);
+      debounceTimers.delete(groupId);
+      if (events.length === 0) return;
+
+      const combined = events.length === 1
+        ? events[0].body
+        : events.map(e => e.body).join("\n\n");
+      const lastSender = events.at(-1)?.senderAgentId;
+
+      enqueueDispatch(groupId, () => doDispatch(groupId, combined, lastSender));
+    }, DEBOUNCE_MS));
+  }
+
+  // Core dispatch: build MsgContext, record session, dispatch to agent
+  async function doDispatch(groupId: string, body: string, senderAgentId?: string) {
+    const senderName = senderAgentId
+      ? (contacts.getNameByAgentId(senderAgentId) ?? senderAgentId)
+      : "system";
+
+    try {
+      // 1. Resolve route → session key
+      const route = channelApi.routing.resolveAgentRoute({
+        cfg: ocConfig,
+        channel: "agentlink",
+        accountId: config.agent.id,
+        peer: { kind: "group", id: groupId },
+      });
+
+      // 2. Build + finalize inbound context
+      const ctx = channelApi.reply.finalizeInboundContext({
+        Body: body,
+        BodyForAgent: body,
+        SessionKey: route.sessionKey,
+        From: `agentlink:${senderAgentId ?? "system"}`,
+        To: `agentlink:${config.agent.id}`,
+        Provider: "agentlink",
+        Surface: "agentlink",
+        OriginatingChannel: "agentlink",
+        OriginatingTo: groupId,
+        SenderName: senderName,
+        SenderId: senderAgentId ?? "system",
+        ChatType: "group",
+        CommandAuthorized: true,
+        Timestamp: Date.now(),
+      });
+
+      // 3. Record session
+      const cfgAny = ocConfig as Record<string, any>;
+      const storePath = channelApi.session.resolveStorePath(
+        cfgAny.session?.store ?? cfgAny.store,
+        { agentId: route.agentId },
+      );
+      await channelApi.session.recordInboundSession({
+        storePath,
+        sessionKey: route.sessionKey,
+        ctx,
+        onRecordError: (err) => logger.warn(`[AgentLink] recordInboundSession error: ${err}`),
+      });
+
+      // 4. Dispatch — agent wakes up and processes the event
+      await channelApi.reply.dispatchReplyWithBufferedBlockDispatcher({
+        ctx,
+        cfg: ocConfig,
+        dispatcherOptions: {
+          deliver: async (payload, info) => {
+            if (info.kind !== "final") return;
+            if (!payload.text) return;
+            // Send agent's response to MQTT group as chat message
+            const envelope = createEnvelope(config.agent.id, {
+              group_id: groupId,
+              to: "group",
+              type: "chat",
+              payload: { text: payload.text },
+            });
+            await mqtt.publishEnvelope(TOPICS.groupMessages(groupId, config.agent.id), envelope);
+          },
+          onError: (err, info) => {
+            logger.warn(`[AgentLink] dispatch ${info.kind} error for group ${groupId}: ${err}`);
+          },
+        },
+        replyOptions: { disableBlockStreaming: true },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`[AgentLink] dispatch failed for group ${groupId}: ${msg}`);
+    }
+  }
+
+  return {
+    dispatch: scheduleDebounced,
+    shutdown() {
+      for (const timer of debounceTimers.values()) clearTimeout(timer);
+      debounceTimers.clear();
+      pendingEvents.clear();
     },
   };
 }

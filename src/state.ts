@@ -19,6 +19,10 @@ export interface StateManager {
   incrementIdleTurns(groupId: string): number;
   resetIdleTurns(groupId: string): void;
 
+  // Participant capabilities (from MQTT status messages)
+  updateParticipantCapabilities(groupId: string, agentId: string, capabilities: Array<{ name: string; description: string }>): void;
+  getParticipantCapabilities(groupId: string, agentId: string): Array<{ name: string; description: string }> | null;
+
   // Jobs
   addJob(job: PendingJob): void;
   getJob(correlationId: string): PendingJob | null;
@@ -117,6 +121,18 @@ export function createState(dataDir: string): StateManager {
         data.groups[groupId].idle_turns = 0;
         save();
       }
+    },
+
+    updateParticipantCapabilities(groupId, agentId, capabilities) {
+      const group = data.groups[groupId];
+      if (!group) return;
+      if (!group.participant_capabilities) group.participant_capabilities = {};
+      group.participant_capabilities[agentId] = capabilities;
+      save();
+    },
+
+    getParticipantCapabilities(groupId, agentId) {
+      return data.groups[groupId]?.participant_capabilities?.[agentId] ?? null;
     },
 
     addJob(job) {

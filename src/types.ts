@@ -165,6 +165,7 @@ export interface GroupState {
   done_when: string;
   intent_id: string;
   participants: string[];
+  participant_capabilities?: Record<string, Array<{ name: string; description: string }>>;
   status: "active" | "closing";
   idle_turns: number;
   created_at: string;

@@ -24,6 +24,7 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test:e2e": "npx tsx test/two-agent-e2e.ts",
+    "bob": "npx tsx test/bob-agent.ts",
     "prepublishOnly": "npm test"
   },
   "keywords": [
