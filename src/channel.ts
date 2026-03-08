@@ -296,35 +296,25 @@ export function createChannelInbound(
         accountId: config.agent.id,
       });
 
+      // Use webchat as provider/channel so we don't overwrite the main session's metadata
       const ctx = channelApi.reply.finalizeInboundContext({
         Body: body,
         BodyForAgent: body,
         SessionKey: route.sessionKey,
-        From: `agentlink:system`,
+        From: `webchat:user`,
         To: `webchat:${config.agent.id}`,
-        Provider: "agentlink",
+        Provider: "webchat",
         Surface: "webchat",
-        OriginatingChannel: "agentlink",
+        OriginatingChannel: "webchat",
         OriginatingTo: config.agent.id,
-        SenderName: "AgentLink",
-        SenderId: "agentlink-system",
+        SenderName: "You",
+        SenderId: "user",
         ChatType: "direct",
         CommandAuthorized: true,
         Timestamp: Date.now(),
       });
 
-      const cfgAny = ocConfig as Record<string, any>;
-      const storePath = channelApi.session.resolveStorePath(
-        cfgAny.session?.store ?? cfgAny.store,
-        { agentId: route.agentId },
-      );
-      await channelApi.session.recordInboundSession({
-        storePath,
-        sessionKey: route.sessionKey,
-        ctx,
-        onRecordError: (err) => logger.warn(`[AgentLink] recordInboundSession (main) error: ${err}`),
-      });
-
+      // Skip recordInboundSession to avoid overwriting main session metadata
       await channelApi.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx,
         cfg: ocConfig,
