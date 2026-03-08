@@ -116,6 +116,7 @@ export function createTools(
   invites: InviteManager,
   jobs: JobManager,
   logger: Logger,
+  channelInbound?: { dispatchToMainSession(body: string): void; clearWatchdog(groupId: string): void } | null,
 ) {
   function log(msg: string) {
     if (config.outputMode === "debug") {
@@ -178,7 +179,8 @@ export function createTools(
         intent_id: intentId,
         participants: participantIds,
         status: "invites_sent",
-        message: `Coordination started. Waiting for ${participantIds.length} agent(s) to join.`,
+        coordination_session: `agentlink:g-${groupId.split("-")[0]}`,
+        message: `Coordination started. Running autonomously in the background — I'll report back here when it's done. You can watch the live coordination in the agentlink session.`,
       });
     },
   };
@@ -346,8 +348,22 @@ export function createTools(
       );
 
       state.removeGroup(groupId);
+      channelInbound?.clearWatchdog(groupId);
 
       log(`Coordination complete: ${summary}`);
+
+      // Dispatch completion summary back to Main Session
+      if (channelInbound) {
+        const participantNames = group.participants
+          .map(p => contacts.getNameByAgentId(p) ?? p)
+          .join(", ");
+        channelInbound.dispatchToMainSession([
+          `[AgentLink] Coordination complete!`,
+          `Goal: ${group.goal}`,
+          `Participants: ${participantNames}`,
+          `Result: ${summary}`,
+        ].join("\n"));
+      }
 
       return json({
         group_id: groupId,

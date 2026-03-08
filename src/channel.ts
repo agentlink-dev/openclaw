@@ -135,10 +135,13 @@ export function createChannelPlugin(
 
 export interface ChannelInbound {
   dispatch(groupId: string, body: string, senderAgentId?: string): void;
+  dispatchToMainSession(body: string): void;
+  clearWatchdog(groupId: string): void;
   shutdown(): void;
 }
 
 const DEBOUNCE_MS = 1500;
+const WATCHDOG_MS = 20_000; // re-dispatch if no activity for 20s
 
 export function createChannelInbound(
   config: AgentLinkConfig,
@@ -158,11 +161,32 @@ export function createChannelInbound(
     dispatchQueues.set(groupId, next);
   }
 
+  // Watchdog: re-dispatch if a group goes idle (agent sent chat but no job → no response)
+  const watchdogTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function resetWatchdog(groupId: string) {
+    const existing = watchdogTimers.get(groupId);
+    if (existing) clearTimeout(existing);
+
+    watchdogTimers.set(groupId, setTimeout(() => {
+      watchdogTimers.delete(groupId);
+      const group = state.getGroup(groupId);
+      if (!group || group.driver !== config.agent.id) return;
+      logger.info(`[AgentLink] Watchdog: group ${groupId.slice(0, 8)} idle for ${WATCHDOG_MS / 1000}s, nudging agent`);
+      enqueueDispatch(groupId, () => doDispatch(groupId,
+        `[AgentLink] No new activity for ${WATCHDOG_MS / 1000}s. The other agent may not have received a job to respond to. Submit a job using agentlink_submit_job, or if the goal is met, call agentlink_complete.`,
+      ));
+    }, WATCHDOG_MS));
+  }
+
   // Debounce: coalesce rapid events per group into one inbound message
   const pendingEvents = new Map<string, Array<{ body: string; senderAgentId?: string }>>();
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function scheduleDebounced(groupId: string, body: string, senderAgentId?: string) {
+    // Any inbound event resets the watchdog (activity detected)
+    resetWatchdog(groupId);
+
     if (!pendingEvents.has(groupId)) pendingEvents.set(groupId, []);
     pendingEvents.get(groupId)!.push({ body, senderAgentId });
 
@@ -180,7 +204,10 @@ export function createChannelInbound(
         : events.map(e => e.body).join("\n\n");
       const lastSender = events.at(-1)?.senderAgentId;
 
-      enqueueDispatch(groupId, () => doDispatch(groupId, combined, lastSender));
+      enqueueDispatch(groupId, () => doDispatch(groupId, combined, lastSender).then(() => {
+        // Restart watchdog after dispatch completes (agent turn done, waiting for response)
+        resetWatchdog(groupId);
+      }));
     }, DEBOUNCE_MS));
   }
 
@@ -259,11 +286,86 @@ export function createChannelInbound(
     }
   }
 
+  // Dispatch to the main/webchat session (for completion callbacks)
+  async function doDispatchToMainSession(body: string) {
+    try {
+      // Resolve the webchat main session
+      const route = channelApi.routing.resolveAgentRoute({
+        cfg: ocConfig,
+        channel: "webchat",
+        accountId: config.agent.id,
+      });
+
+      const ctx = channelApi.reply.finalizeInboundContext({
+        Body: body,
+        BodyForAgent: body,
+        SessionKey: route.sessionKey,
+        From: `agentlink:system`,
+        To: `webchat:${config.agent.id}`,
+        Provider: "agentlink",
+        Surface: "webchat",
+        OriginatingChannel: "agentlink",
+        OriginatingTo: config.agent.id,
+        SenderName: "AgentLink",
+        SenderId: "agentlink-system",
+        ChatType: "direct",
+        CommandAuthorized: true,
+        Timestamp: Date.now(),
+      });
+
+      const cfgAny = ocConfig as Record<string, any>;
+      const storePath = channelApi.session.resolveStorePath(
+        cfgAny.session?.store ?? cfgAny.store,
+        { agentId: route.agentId },
+      );
+      await channelApi.session.recordInboundSession({
+        storePath,
+        sessionKey: route.sessionKey,
+        ctx,
+        onRecordError: (err) => logger.warn(`[AgentLink] recordInboundSession (main) error: ${err}`),
+      });
+
+      await channelApi.reply.dispatchReplyWithBufferedBlockDispatcher({
+        ctx,
+        cfg: ocConfig,
+        dispatcherOptions: {
+          deliver: async (_payload, _info) => {
+            // Main session delivery is handled by OC's webchat — no MQTT needed
+          },
+          onError: (err, info) => {
+            logger.warn(`[AgentLink] main session dispatch ${info.kind} error: ${err}`);
+          },
+        },
+        replyOptions: { disableBlockStreaming: true },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`[AgentLink] main session dispatch failed: ${msg}`);
+    }
+  }
+
+  // Main session dispatch queue (separate from per-group queues)
+  let mainSessionQueue: Promise<void> = Promise.resolve();
+
+  function scheduleMainSessionDispatch(body: string) {
+    mainSessionQueue = mainSessionQueue.then(
+      () => doDispatchToMainSession(body),
+      () => doDispatchToMainSession(body),
+    );
+  }
+
   return {
     dispatch: scheduleDebounced,
+    dispatchToMainSession: scheduleMainSessionDispatch,
+    clearWatchdog(groupId: string) {
+      const timer = watchdogTimers.get(groupId);
+      if (timer) { clearTimeout(timer); watchdogTimers.delete(groupId); }
+    },
     shutdown() {
       for (const timer of debounceTimers.values()) clearTimeout(timer);
+      for (const timer of watchdogTimers.values()) clearTimeout(timer);
       debounceTimers.clear();
+      watchdogTimers.clear();
       pendingEvents.clear();
     },
   };

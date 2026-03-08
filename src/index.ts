@@ -66,18 +66,6 @@ function register(api: PluginApi) {
     }
   }
 
-  // DEBUG: dump what OC provides on api.runtime so we know the channel API surface
-  logger.info(`[AgentLink] api.runtime keys: ${api.runtime ? Object.keys(api.runtime).join(", ") : "undefined"}`);
-  if (api.runtime) {
-    logger.info(`[AgentLink] api.runtime.channel: ${api.runtime.channel ? Object.keys(api.runtime.channel).join(", ") : "undefined"}`);
-    if (api.runtime.channel) {
-      logger.info(`[AgentLink] channel.reply keys: ${Object.keys(api.runtime.channel.reply).join(", ")}`);
-      logger.info(`[AgentLink] channel.session keys: ${Object.keys(api.runtime.channel.session).join(", ")}`);
-      logger.info(`[AgentLink] channel.routing keys: ${Object.keys(api.runtime.channel.routing).join(", ")}`);
-    }
-  }
-  logger.info(`[AgentLink] api keys: ${Object.keys(api).join(", ")}`);
-
   const mqttService = createMqttService(config, state, contacts, logger);
 
   const invites = createInviteManager(config, mqttService);
@@ -290,7 +278,7 @@ function register(api: PluginApi) {
   });
 
   // Register the 5 agent tools
-  const tools = createTools(config, state, contacts, mqttService, invites, jobs, logger);
+  const tools = createTools(config, state, contacts, mqttService, invites, jobs, logger, channelInbound);
   for (const tool of tools) {
     api.registerTool(tool);
   }
