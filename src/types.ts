@@ -24,7 +24,6 @@ export interface AgentLinkConfig {
 
 export interface Capability {
   name: string;
-  tool: string;
   description?: string;
   input_hint?: string;
 }

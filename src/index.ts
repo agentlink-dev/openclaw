@@ -109,17 +109,6 @@ function register(api: PluginApi) {
 
   const invites = createInviteManager(config, mqttService);
 
-  // executeTool bridge: calls the local OC tool when a job_request arrives
-  const executeTool = api.runtime
-    ? async (toolId: string, input: string): Promise<string> => {
-        const result = await api.runtime!.executeTool({
-          toolName: toolId,
-          params: { input },
-        });
-        return typeof result === "string" ? result : JSON.stringify(result);
-      }
-    : undefined;
-
   // Channel inbound: wakes agent when MQTT events arrive (autonomous coordination)
   const channelInbound: ChannelInbound | null = api.runtime?.channel
     ? createChannelInbound(config, state, contacts, mqttService, api.runtime.channel, api.config, logger)
@@ -129,35 +118,16 @@ function register(api: PluginApi) {
     logger.warn("[AgentLink] Channel inbound API not available. Autonomous coordination disabled.");
   }
 
-  // LLM fallback: when no capability matches a job_request, dispatch to the agent's
-  // LLM so it can answer from its memory/knowledge (MEMORY.md, IDENTITY.md, etc.)
-  const llmFallback = channelInbound
+  // LLM dispatch: routes job questions to the agent's OC session as plain natural
+  // language. The OC session has all the tools it needs (exec, gog, skills, etc.)
+  // and will handle the question exactly like a user message.
+  const llmDispatch = channelInbound
     ? async (groupId: string, question: string, senderAgentId: string): Promise<string> => {
-        const senderName = resolveDisplayName(senderAgentId);
-        const hasTools = config.agent.capabilities.length > 0;
-        const capHints = config.agent.capabilities
-          .map((c) => `- ${c.name}: ${c.description ?? c.name} (tool: ${c.tool})`)
-          .join("\n");
-        const agentBody = hasTools
-          ? [
-              `[AgentLink] ${senderName} is asking you: ${question}`,
-              ``,
-              `You have these capabilities:`,
-              capHints,
-              ``,
-              `Use the exec tool to run the appropriate CLI command. Be concise and direct — just provide the information requested.`,
-            ].join("\n")
-          : [
-              `[AgentLink] ${senderName} is asking you: ${question}`,
-              ``,
-              `Answer based on what you know about your human. Be concise and direct — just provide the information requested.`,
-              `Do NOT use any tools. Just reply with text.`,
-            ].join("\n");
-        return channelInbound.dispatchAndCapture(groupId, "", senderAgentId, agentBody);
+        return channelInbound.dispatchAndCapture(groupId, "", senderAgentId, question);
       }
     : undefined;
 
-  const jobs = createJobManager(config, state, mqttService, logger, executeTool, llmFallback);
+  const jobs = createJobManager(config, state, mqttService, logger, llmDispatch);
 
   // Wire inbound message handling
   mqttService.onGroupMessage((msg) => {

@@ -19,13 +19,17 @@ export interface JobManager {
   handleJobRequest(msg: MessageEnvelope): Promise<MessageEnvelope | null>;
 }
 
+/**
+ * AgentLink doesn't execute tools — it routes job requests to the receiving
+ * agent's OC session via llmDispatch. The OC session has all the tools it
+ * needs (exec, gog, skills, etc.) and handles the question like a user message.
+ */
 export function createJobManager(
   config: AgentLinkConfig,
   state: StateManager,
   mqtt: MqttService,
   logger: Logger,
-  executeTool?: (toolId: string, input: string) => Promise<string>,
-  llmFallback?: (groupId: string, question: string, senderAgentId: string) => Promise<string>,
+  llmDispatch?: (groupId: string, question: string, senderAgentId: string) => Promise<string>,
 ): JobManager {
   return {
     async submitJob(params) {
@@ -84,70 +88,13 @@ export function createJobManager(
       const capability = msg.payload.capability;
       if (!capability) return null;
 
-      // Fuzzy match: "check_calendar" matches "calendar" (substring)
-      const reqLower = capability.toLowerCase();
-      const cap = config.agent.capabilities.find((c) => {
-        const n = c.name.toLowerCase();
-        return n === reqLower || reqLower.includes(n) || n.includes(reqLower);
-      });
-      if (!cap) {
-        // No matching capability — try LLM fallback (dispatches to agent's LLM)
-        if (llmFallback) {
-          logger.info(`[AgentLink] No capability '${capability}' — falling back to LLM`);
-          try {
-            const result = await llmFallback(
-              msg.group_id,
-              msg.payload.text ?? `What can you tell me about: ${capability}?`,
-              msg.from,
-            );
-            const response = createEnvelope(config.agent.id, {
-              group_id: msg.group_id,
-              intent_id: msg.intent_id,
-              to: msg.from,
-              type: "job_response",
-              correlation_id: msg.correlation_id,
-              payload: {
-                status: "completed",
-                result,
-                capability,
-              },
-            });
-            await mqtt.publishEnvelope(
-              TOPICS.groupMessages(msg.group_id, config.agent.id),
-              response,
-            );
-            return response;
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            logger.warn(`[AgentLink] LLM fallback failed: ${errMsg}`);
-            // Fall through to standard failure response
-          }
-        }
+      const question = msg.payload.text ?? `What can you tell me about: ${capability}?`;
 
-        const response = createEnvelope(config.agent.id, {
-          group_id: msg.group_id,
-          intent_id: msg.intent_id,
-          to: msg.from,
-          type: "job_response",
-          correlation_id: msg.correlation_id,
-          payload: {
-            status: "failed",
-            result: `Capability '${capability}' not available`,
-            capability,
-          },
-        });
-        await mqtt.publishEnvelope(
-          TOPICS.groupMessages(msg.group_id, config.agent.id),
-          response,
-        );
-        return response;
-      }
-
-      // Try direct tool execution first; fall back to LLM if unavailable
-      if (executeTool) {
-        logger.info(`[AgentLink] Running local tool: ${cap.tool} for capability: ${capability}`);
+      // Route to the agent's OC session — it handles tool execution locally
+      if (llmDispatch) {
+        logger.info(`[AgentLink] Job for '${capability}' — dispatching to OC session`);
         try {
-          const result = await executeTool(cap.tool, msg.payload.text ?? "");
+          const result = await llmDispatch(msg.group_id, question, msg.from);
           const response = createEnvelope(config.agent.id, {
             group_id: msg.group_id,
             intent_id: msg.intent_id,
@@ -159,36 +106,12 @@ export function createJobManager(
           await mqtt.publishEnvelope(TOPICS.groupMessages(msg.group_id, config.agent.id), response);
           return response;
         } catch (err) {
-          logger.warn(`[AgentLink] executeTool failed for '${capability}': ${err instanceof Error ? err.message : err}`);
-          // Fall through to LLM fallback
+          const errMsg = err instanceof Error ? err.message : String(err);
+          logger.warn(`[AgentLink] Job dispatch failed for '${capability}': ${errMsg}`);
         }
       }
 
-      // LLM fallback — the agent's LLM has access to OC tools (exec, etc.)
-      if (llmFallback) {
-        logger.info(`[AgentLink] Using LLM fallback for capability '${capability}'`);
-        try {
-          const result = await llmFallback(
-            msg.group_id,
-            msg.payload.text ?? `What can you tell me about: ${capability}?`,
-            msg.from,
-          );
-          const response = createEnvelope(config.agent.id, {
-            group_id: msg.group_id,
-            intent_id: msg.intent_id,
-            to: msg.from,
-            type: "job_response",
-            correlation_id: msg.correlation_id,
-            payload: { status: "completed", result, capability },
-          });
-          await mqtt.publishEnvelope(TOPICS.groupMessages(msg.group_id, config.agent.id), response);
-          return response;
-        } catch (err) {
-          logger.warn(`[AgentLink] LLM fallback failed for '${capability}': ${err instanceof Error ? err.message : err}`);
-        }
-      }
-
-      // Both paths failed
+      // No dispatch available — fail
       const response = createEnvelope(config.agent.id, {
         group_id: msg.group_id,
         intent_id: msg.intent_id,
@@ -197,7 +120,7 @@ export function createJobManager(
         correlation_id: msg.correlation_id,
         payload: {
           status: "failed",
-          result: `Capability '${capability}' execution failed`,
+          result: llmDispatch ? `Job '${capability}' failed` : "No agent session available",
           capability,
         },
       });
