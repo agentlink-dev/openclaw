@@ -162,12 +162,9 @@ function register(api: PluginApi) {
     const capabilities = status.capabilities as Array<{ name: string; description: string }> | undefined;
     if (!capabilities || !Array.isArray(capabilities)) return;
 
-    // Update capabilities for all active groups this agent is in
+    // Store capabilities for all active groups (status may arrive before join)
     for (const groupId of state.getActiveGroups()) {
-      const group = state.getGroup(groupId);
-      if (group && group.participants.includes(agentId)) {
-        state.updateParticipantCapabilities(groupId, agentId, capabilities);
-      }
+      state.updateParticipantCapabilities(groupId, agentId, capabilities);
     }
   });
 

@@ -309,7 +309,7 @@ export function createChannelInbound(
         Surface: "webchat",
         OriginatingChannel: "webchat",
         OriginatingTo: config.agent.id,
-        SenderName: "You",
+        SenderName: "Main Session",
         SenderId: "user",
         ChatType: "direct",
         CommandAuthorized: true,
