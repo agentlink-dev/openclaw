@@ -13,6 +13,7 @@ export interface AgentLinkConfig {
   brokerPassword?: string;
   agent: {
     id: string;
+    displayName?: string;
     description?: string;
     capabilities: Capability[];
   };
@@ -128,6 +129,7 @@ export interface CapabilityAdvertisement {
 export interface AgentStatus {
   agent_id: string;
   owner: string;
+  display_name?: string;
   status: "online" | "offline";
   capabilities: CapabilityAdvertisement[];
   description?: string;
@@ -232,6 +234,15 @@ export const TOPICS = {
   inviteCode: (code: string) =>
     `agentlink/invites/${code}`,
 } as const;
+
+// ---------------------------------------------------------------------------
+// IDENTITY.md parser
+// ---------------------------------------------------------------------------
+
+export function parseIdentityMd(content: string): { name?: string } {
+  const match = content.match(/\*\*Name:\*\*\s*(.+)/);
+  return { name: match?.[1]?.trim() };
+}
 
 // ---------------------------------------------------------------------------
 // Type guards

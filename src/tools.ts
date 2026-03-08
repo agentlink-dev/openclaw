@@ -32,6 +32,7 @@ async function publishStatus(
   const status: AgentStatus = {
     agent_id: config.agent.id,
     owner: config.agent.description?.split("'s")[0] ?? config.agent.id,
+    display_name: config.agent.displayName,
     status: "online",
     capabilities: config.agent.capabilities.map((c) => ({
       name: c.name,
@@ -117,6 +118,7 @@ export function createTools(
   jobs: JobManager,
   logger: Logger,
   channelInbound?: { dispatchToMainSession(body: string): void; clearWatchdog(groupId: string): void } | null,
+  resolveDisplayName?: (agentId: string) => string,
 ) {
   function log(msg: string) {
     if (config.outputMode === "debug") {
@@ -225,7 +227,7 @@ export function createTools(
       state.resetIdleTurns(groupId);
 
       const targetName = params.target_agent
-        ? (contacts.getNameByAgentId(params.target_agent as string) ?? params.target_agent as string)
+        ? (resolveDisplayName ? resolveDisplayName(params.target_agent as string) : (contacts.getNameByAgentId(params.target_agent as string) ?? params.target_agent as string))
         : null;
       return json({
         sent_to: targetName ?? "group",
@@ -366,10 +368,11 @@ export function createTools(
       // Dispatch completion summary back to Main Session
       if (channelInbound) {
         const participantNames = group.participants
-          .map(p => contacts.getNameByAgentId(p) ?? p)
+          .filter(p => p !== config.agent.id)
+          .map(p => resolveDisplayName ? resolveDisplayName(p) : (contacts.getNameByAgentId(p) ?? p))
           .join(", ");
         channelInbound.dispatchToMainSession(
-          `All set! Coordination with ${participantNames}'s assistant is complete.\n\n**Goal:** ${group.goal}\n**Result:** ${summary}`,
+          `Coordination with ${participantNames} complete.\n\n**Goal:** ${group.goal}\n**Result:** ${summary}`,
         );
       }
 
@@ -402,6 +405,7 @@ export function createTools(
 
       return json({
         agent_id: config.agent.id,
+        display_name: config.agent.displayName ?? null,
         broker: config.brokerUrl,
         connected,
         active_groups: groups.length,

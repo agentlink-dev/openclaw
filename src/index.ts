@@ -1,5 +1,7 @@
+import fs from "node:fs";
+import nodePath from "node:path";
 import type { AgentLinkConfig } from "./types.js";
-import { resolveConfig } from "./types.js";
+import { resolveConfig, parseIdentityMd } from "./types.js";
 import { createContacts } from "./contacts.js";
 import { createState } from "./state.js";
 import { createMqttService } from "./mqtt-service.js";
@@ -60,6 +62,40 @@ function register(api: PluginApi) {
   const state = createState(config.dataDir);
   const logger = api.logger;
 
+  // Read display name from IDENTITY.md in the OC workspace
+  if (!config.agent.displayName) {
+    try {
+      const ocConfig = api.config as Record<string, unknown>;
+      const workspacePath = (ocConfig.workspace as Record<string, unknown>)?.path as string | undefined;
+      if (workspacePath) {
+        const identityPath = nodePath.join(workspacePath, "IDENTITY.md");
+        if (fs.existsSync(identityPath)) {
+          const content = fs.readFileSync(identityPath, "utf-8");
+          const parsed = parseIdentityMd(content);
+          if (parsed.name) {
+            config.agent.displayName = parsed.name;
+            logger.info(`[AgentLink] Display name from IDENTITY.md: ${parsed.name}`);
+          }
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`[AgentLink] Failed to read IDENTITY.md: ${msg}`);
+    }
+  }
+
+  // Registry for remote agents' display names (from MQTT status messages)
+  const remoteDisplayNames = new Map<string, string>();
+
+  /** Resolve display name for a remote agent: status display_name → contact name → agent_id */
+  function resolveDisplayName(agentId: string): string {
+    const fromStatus = remoteDisplayNames.get(agentId);
+    if (fromStatus) return fromStatus;
+    const fromContacts = contacts.getNameByAgentId(agentId);
+    if (fromContacts) return fromContacts.charAt(0).toUpperCase() + fromContacts.slice(1);
+    return agentId;
+  }
+
   function log(msg: string) {
     if (config.outputMode === "debug") {
       logger.info(`[AgentLink] ${msg}`);
@@ -94,9 +130,9 @@ function register(api: PluginApi) {
   // LLM so it can answer from its memory/knowledge (MEMORY.md, IDENTITY.md, etc.)
   const llmFallback = channelInbound
     ? async (groupId: string, question: string, senderAgentId: string): Promise<string> => {
-        const senderName = contacts.getNameByAgentId(senderAgentId) ?? senderAgentId;
+        const senderName = resolveDisplayName(senderAgentId);
         const agentBody = [
-          `[AgentLink] ${senderName}'s assistant is asking you: ${question}`,
+          `[AgentLink] ${senderName} is asking you: ${question}`,
           ``,
           `Answer based on what you know about your human. Be concise and direct — just provide the information requested.`,
           `Do NOT use any tools. Just reply with text.`,
@@ -123,12 +159,10 @@ function register(api: PluginApi) {
       jobs.handleJobResponse(msg);
       // Wake agent with the response
       if (channelInbound) {
-        const name = contacts.getNameByAgentId(msg.from) ?? msg.from;
-        const cap = msg.payload.capability ?? "unknown";
+        const displayName = resolveDisplayName(msg.from);
         const result = msg.payload.result ?? msg.payload.text ?? "(no text)";
-        const displayName = name.charAt(0).toUpperCase() + name.slice(1);
         channelInbound.dispatch(msg.group_id,
-          `**${displayName}'s Assistant:** ${result}`,
+          `**${displayName}:** ${result}`,
           msg.from);
       }
       return;
@@ -138,10 +172,9 @@ function register(api: PluginApi) {
     if (msg.type === "chat" && channelInbound) {
       const group = state.getGroup(msg.group_id);
       if (group && group.driver === config.agent.id) {
-        const name = contacts.getNameByAgentId(msg.from) ?? msg.from;
-        const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+        const displayName = resolveDisplayName(msg.from);
         channelInbound.dispatch(msg.group_id,
-          `**${displayName}'s Assistant:** ${msg.payload.text ?? "(no text)"}`,
+          `**${displayName}:** ${msg.payload.text ?? "(no text)"}`,
           msg.from);
         return;
       }
@@ -157,18 +190,18 @@ function register(api: PluginApi) {
     if (msg.type === "invite") {
       const fromId = msg.from as string;
       const goal = msg.goal as string;
-      const name = contacts.getNameByAgentId(fromId) ?? fromId;
-      log(`Invite received from ${name}: "${goal}"`);
+      const displayName = resolveDisplayName(fromId);
+      log(`Invite received from ${displayName}: "${goal}"`);
 
       if (channelInbound && contacts.resolve(fromId)) {
         const groupId = msg.group_id as string;
         const inviteCode = msg.invite_code as string | undefined;
         if (!inviteCode) {
-          logger.warn(`[AgentLink] Invite from ${name} missing invite_code — cannot join`);
+          logger.warn(`[AgentLink] Invite from ${displayName} missing invite_code — cannot join`);
           return;
         }
         const agentBody = [
-          `[AgentLink] ${name}'s assistant invited you to coordinate. Goal: "${goal}"`,
+          `[AgentLink] ${displayName} invited you to coordinate. Goal: "${goal}"`,
           `This is a known contact. Accept by calling agentlink_join_group with invite_code: "${inviteCode}"`,
           `Do NOT output any text — just call the tool.`,
         ].join("\n");
@@ -177,12 +210,18 @@ function register(api: PluginApi) {
     }
   });
 
-  // Status updates: track participant capabilities
+  // Status updates: track participant capabilities and display names
   mqttService.onStatusUpdate((raw) => {
     const status = raw as Record<string, unknown>;
     if (!status || typeof status !== "object") return;
     const agentId = status.agent_id as string;
     if (!agentId || agentId === config.agent.id) return;
+
+    // Store display name from remote agent's status message
+    const displayName = status.display_name as string | undefined;
+    if (displayName) {
+      remoteDisplayNames.set(agentId, displayName);
+    }
 
     const capabilities = status.capabilities as Array<{ name: string; description: string }> | undefined;
     if (!capabilities || !Array.isArray(capabilities)) return;
@@ -213,8 +252,8 @@ function register(api: PluginApi) {
         state.updateGroup(groupId, { participants: group.participants });
       }
 
-      const name = contacts.getNameByAgentId(from) ?? from;
-      logger.info(`[AgentLink] ${name} joined group ${groupId.slice(0, 8)} (isNew=${isNew}, hasInbound=${!!channelInbound}, isDriver=${group.driver === config.agent.id})`);
+      const displayName = resolveDisplayName(from);
+      logger.info(`[AgentLink] ${displayName} joined group ${groupId.slice(0, 8)} (isNew=${isNew}, hasInbound=${!!channelInbound}, isDriver=${group.driver === config.agent.id})`);
 
       // Wake agent with join notification (only on first join, prevent duplicates)
       if (isNew && channelInbound && group.driver === config.agent.id) {
@@ -223,10 +262,9 @@ function register(api: PluginApi) {
           ? caps.map(c => `- **${c.name}**: ${c.description}`).join("\n")
           : "(capabilities loading...)";
 
-        const displayName = name.charAt(0).toUpperCase() + name.slice(1);
         // Empty body = invisible "You" bubble. Agent gets full context via agentBody.
         const agentContext = [
-          `${displayName}'s Assistant joined. Goal: "${group.goal}" | Done when: "${group.done_when}"`,
+          `${displayName} joined. Goal: "${group.goal}" | Done when: "${group.done_when}"`,
           ``,
           `What they can help with:`,
           capList,
@@ -245,11 +283,10 @@ function register(api: PluginApi) {
       if (group && from !== config.agent.id) {
         // Wake agent with completion notification before cleanup
         if (channelInbound && group.driver !== config.agent.id) {
-          const name = contacts.getNameByAgentId(from) ?? from;
+          const displayName = resolveDisplayName(from);
           const summary = (envelope.payload as Record<string, unknown>)?.text as string ?? "";
-          const displayName = name.charAt(0).toUpperCase() + name.slice(1);
           channelInbound.dispatch(groupId,
-            `Coordination wrapped up by ${displayName}'s Assistant. ${summary}`,
+            `Coordination wrapped up by ${displayName}. ${summary}`,
             from);
         }
         mqttService.unsubscribeGroup(groupId);
@@ -306,7 +343,7 @@ function register(api: PluginApi) {
   });
 
   // Register the 5 agent tools
-  const tools = createTools(config, state, contacts, mqttService, invites, jobs, logger, channelInbound);
+  const tools = createTools(config, state, contacts, mqttService, invites, jobs, logger, channelInbound, resolveDisplayName);
   for (const tool of tools) {
     api.registerTool(tool);
   }
@@ -353,9 +390,9 @@ function register(api: PluginApi) {
         if (!group) continue;
         const participantNames = group.participants
           .filter(p => p !== config.agent.id)
-          .map(p => contacts.getNameByAgentId(p) ?? p)
+          .map(p => resolveDisplayName(p))
           .join(", ");
-        prompt += `### Coordinating with ${participantNames ? participantNames + "'s assistant" : "other assistants"}\n`;
+        prompt += `### Coordinating with ${participantNames || "other assistants"}\n`;
         prompt += `**Goal:** ${group.goal}\n`;
         prompt += `**Done when:** ${group.done_when}\n`;
         if (group.idle_turns >= 3) {
@@ -378,6 +415,9 @@ function register(api: PluginApi) {
           .description("Show AgentLink connection and group status")
           .action(() => {
             console.log(`Agent ID: ${config.agent.id}`);
+            if (config.agent.displayName) {
+              console.log(`Display Name: ${config.agent.displayName}`);
+            }
             console.log(`Broker: ${config.brokerUrl}`);
             console.log(`Connected: ${mqttService.getClient().isConnected()}`);
             console.log(`Active groups: ${state.getActiveGroups().length}`);
