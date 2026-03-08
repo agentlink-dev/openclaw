@@ -134,12 +134,25 @@ function register(api: PluginApi) {
   const llmFallback = channelInbound
     ? async (groupId: string, question: string, senderAgentId: string): Promise<string> => {
         const senderName = resolveDisplayName(senderAgentId);
-        const agentBody = [
-          `[AgentLink] ${senderName} is asking you: ${question}`,
-          ``,
-          `Answer based on what you know about your human. Be concise and direct — just provide the information requested.`,
-          `Do NOT use any tools. Just reply with text.`,
-        ].join("\n");
+        const hasTools = config.agent.capabilities.length > 0;
+        const capHints = config.agent.capabilities
+          .map((c) => `- ${c.name}: ${c.description ?? c.name} (tool: ${c.tool})`)
+          .join("\n");
+        const agentBody = hasTools
+          ? [
+              `[AgentLink] ${senderName} is asking you: ${question}`,
+              ``,
+              `You have these capabilities:`,
+              capHints,
+              ``,
+              `Use the exec tool to run the appropriate CLI command. Be concise and direct — just provide the information requested.`,
+            ].join("\n")
+          : [
+              `[AgentLink] ${senderName} is asking you: ${question}`,
+              ``,
+              `Answer based on what you know about your human. Be concise and direct — just provide the information requested.`,
+              `Do NOT use any tools. Just reply with text.`,
+            ].join("\n");
         return channelInbound.dispatchAndCapture(groupId, "", senderAgentId, agentBody);
       }
     : undefined;

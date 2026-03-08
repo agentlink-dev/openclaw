@@ -12,12 +12,15 @@ export function createRouter(): Router {
         return [msg.to];
       }
 
-      // Rule 2: Capability match — filter by capability
+      // Rule 2: Capability match — filter by capability (fuzzy: substring match)
       if (msg.payload.capability) {
-        const capName = msg.payload.capability;
+        const requested = msg.payload.capability.toLowerCase();
         return groupParticipants
           .filter((p) => p.agent_id !== msg.from)
-          .filter((p) => p.capabilities.some((c) => c.name === capName))
+          .filter((p) => p.capabilities.some((c) => {
+            const name = c.name.toLowerCase();
+            return name === requested || requested.includes(name) || name.includes(requested);
+          }))
           .map((p) => p.agent_id);
       }
 
@@ -42,9 +45,14 @@ export function shouldProcess(
 
   // If broadcast with capability filter: process if we have the capability
   // OR if we have no capabilities at all (LLM fallback mode — accept everything)
+  // Uses fuzzy matching: "check_calendar" matches "calendar" (substring or keyword overlap)
   if (msg.to === "group" && msg.payload.capability) {
     if (myCapabilities.length === 0) return true;
-    return myCapabilities.some((c) => c.name === msg.payload.capability);
+    const requested = msg.payload.capability.toLowerCase();
+    return myCapabilities.some((c) => {
+      const name = c.name.toLowerCase();
+      return name === requested || requested.includes(name) || name.includes(requested);
+    });
   }
 
   // Broadcast without capability: process (group coordination)

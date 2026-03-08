@@ -84,7 +84,12 @@ export function createJobManager(
       const capability = msg.payload.capability;
       if (!capability) return null;
 
-      const cap = config.agent.capabilities.find((c) => c.name === capability);
+      // Fuzzy match: "check_calendar" matches "calendar" (substring)
+      const reqLower = capability.toLowerCase();
+      const cap = config.agent.capabilities.find((c) => {
+        const n = c.name.toLowerCase();
+        return n === reqLower || reqLower.includes(n) || n.includes(reqLower);
+      });
       if (!cap) {
         // No matching capability — try LLM fallback (dispatches to agent's LLM)
         if (llmFallback) {
@@ -138,36 +143,52 @@ export function createJobManager(
         return response;
       }
 
-      logger.info(`[AgentLink] Running local tool: ${cap.tool} for capability: ${capability}`);
-
-      let result: string;
-      try {
-        if (executeTool) {
-          result = await executeTool(cap.tool, msg.payload.text ?? "");
-        } else {
-          result = `Tool execution not available (no executeTool provided)`;
+      // Try direct tool execution first; fall back to LLM if unavailable
+      if (executeTool) {
+        logger.info(`[AgentLink] Running local tool: ${cap.tool} for capability: ${capability}`);
+        try {
+          const result = await executeTool(cap.tool, msg.payload.text ?? "");
+          const response = createEnvelope(config.agent.id, {
+            group_id: msg.group_id,
+            intent_id: msg.intent_id,
+            to: msg.from,
+            type: "job_response",
+            correlation_id: msg.correlation_id,
+            payload: { status: "completed", result, capability },
+          });
+          await mqtt.publishEnvelope(TOPICS.groupMessages(msg.group_id, config.agent.id), response);
+          return response;
+        } catch (err) {
+          logger.warn(`[AgentLink] executeTool failed for '${capability}': ${err instanceof Error ? err.message : err}`);
+          // Fall through to LLM fallback
         }
-      } catch (err: unknown) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        const response = createEnvelope(config.agent.id, {
-          group_id: msg.group_id,
-          intent_id: msg.intent_id,
-          to: msg.from,
-          type: "job_response",
-          correlation_id: msg.correlation_id,
-          payload: {
-            status: "failed",
-            result: `Tool execution error: ${errMsg}`,
-            capability,
-          },
-        });
-        await mqtt.publishEnvelope(
-          TOPICS.groupMessages(msg.group_id, config.agent.id),
-          response,
-        );
-        return response;
       }
 
+      // LLM fallback — the agent's LLM has access to OC tools (exec, etc.)
+      if (llmFallback) {
+        logger.info(`[AgentLink] Using LLM fallback for capability '${capability}'`);
+        try {
+          const result = await llmFallback(
+            msg.group_id,
+            msg.payload.text ?? `What can you tell me about: ${capability}?`,
+            msg.from,
+          );
+          const response = createEnvelope(config.agent.id, {
+            group_id: msg.group_id,
+            intent_id: msg.intent_id,
+            to: msg.from,
+            type: "job_response",
+            correlation_id: msg.correlation_id,
+            payload: { status: "completed", result, capability },
+          });
+          await mqtt.publishEnvelope(TOPICS.groupMessages(msg.group_id, config.agent.id), response);
+          return response;
+        } catch (err) {
+          logger.warn(`[AgentLink] LLM fallback failed for '${capability}': ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      // Both paths failed
       const response = createEnvelope(config.agent.id, {
         group_id: msg.group_id,
         intent_id: msg.intent_id,
@@ -175,15 +196,12 @@ export function createJobManager(
         type: "job_response",
         correlation_id: msg.correlation_id,
         payload: {
-          status: "completed",
-          result,
+          status: "failed",
+          result: `Capability '${capability}' execution failed`,
           capability,
         },
       });
-      await mqtt.publishEnvelope(
-        TOPICS.groupMessages(msg.group_id, config.agent.id),
-        response,
-      );
+      await mqtt.publishEnvelope(TOPICS.groupMessages(msg.group_id, config.agent.id), response);
       return response;
     },
   };
