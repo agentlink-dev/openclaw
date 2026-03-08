@@ -160,7 +160,7 @@ export function createTools(
         goal,
         done_when: doneWhen,
         intent_id: intentId,
-        participants: participantIds,
+        participants: [config.agent.id], // only driver initially — others added on join
         status: "active",
         idle_turns: 0,
         created_at: new Date().toISOString(),
@@ -174,13 +174,12 @@ export function createTools(
         log(`Invite sent to ${contacts.getNameByAgentId(pid) ?? pid}`);
       }
 
+      const names = participantIds.map(p => contacts.getNameByAgentId(p) ?? p).join(", ");
       return json({
         group_id: groupId,
-        intent_id: intentId,
-        participants: participantIds,
         status: "invites_sent",
-        coordination_session: `agentlink:g-${groupId.split("-")[0]}`,
-        message: `Coordination started. Running autonomously in the background — I'll report back here when it's done. You can watch the live coordination in the agentlink session.`,
+        participants: names,
+        note: "Invites sent. Waiting for participants to join, then start submitting jobs.",
       });
     },
   };
@@ -209,17 +208,10 @@ export function createTools(
 
       state.resetIdleTurns(groupId);
 
-      // Include available capabilities so the agent knows what else it can request
-      const allCaps = group.participant_capabilities ?? {};
-      const capList = Object.entries(allCaps).flatMap(([agentId, caps]) =>
-        caps.map(c => `${contacts.getNameByAgentId(agentId) ?? agentId}: ${c.name} — ${c.description}`)
-      );
-
       return json({
+        status: "sent",
+        capability: params.capability as string,
         correlation_id: correlationId,
-        status: "requested",
-        message: `Job sent: ${params.capability}. Waiting for response (timeout: ${config.jobTimeoutMs / 1000}s).`,
-        ...(capList.length > 0 ? { available_capabilities: capList } : {}),
       });
     },
   };
@@ -357,12 +349,9 @@ export function createTools(
         const participantNames = group.participants
           .map(p => contacts.getNameByAgentId(p) ?? p)
           .join(", ");
-        channelInbound.dispatchToMainSession([
-          `[AgentLink] Coordination complete!`,
-          `Goal: ${group.goal}`,
-          `Participants: ${participantNames}`,
-          `Result: ${summary}`,
-        ].join("\n"));
+        channelInbound.dispatchToMainSession(
+          `Coordination with ${participantNames} is done.\nGoal: ${group.goal}\nOutcome: ${summary}`,
+        );
       }
 
       return json({

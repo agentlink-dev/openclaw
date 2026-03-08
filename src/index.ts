@@ -112,7 +112,7 @@ function register(api: PluginApi) {
         const cap = msg.payload.capability ?? "unknown";
         const result = msg.payload.result ?? msg.payload.text ?? "(no text)";
         channelInbound.dispatch(msg.group_id,
-          `[AgentLink] ${name} responded to ${cap}:\n${result}`,
+          `**${name}** (${cap}): ${result}`,
           msg.from);
       }
       return;
@@ -124,7 +124,7 @@ function register(api: PluginApi) {
       if (group && group.driver === config.agent.id) {
         const name = contacts.getNameByAgentId(msg.from) ?? msg.from;
         channelInbound.dispatch(msg.group_id,
-          `[AgentLink] ${name}: ${msg.payload.text ?? "(no text)"}`,
+          `**${name}**: ${msg.payload.text ?? "(no text)"}`,
           msg.from);
         return;
       }
@@ -146,7 +146,7 @@ function register(api: PluginApi) {
       if (channelInbound && contacts.resolve(fromId)) {
         const groupId = msg.group_id as string;
         channelInbound.dispatch(groupId,
-          `[AgentLink] Invite from ${name}: "${goal}"\nThis is a known contact. Call agentlink_join_group with invite code or use agentlink_coordinate to start your own group.`,
+          `Invite from **${name}**: "${goal}"`,
           fromId);
       }
     }
@@ -175,6 +175,7 @@ function register(api: PluginApi) {
     const msg = raw as Record<string, unknown>;
     if (!msg || typeof msg !== "object" || !("type" in msg)) return;
     const envelope = msg as Record<string, unknown>;
+    logger.info(`[AgentLink] System event: type=${envelope.type}, from=${envelope.from}`);
 
     if (envelope.type === "join") {
       const from = envelope.from as string;
@@ -183,29 +184,29 @@ function register(api: PluginApi) {
       const group = state.getGroup(groupId);
       if (!group) return;
 
-      if (!group.participants.includes(from)) {
+      // Deduplicate: only process first join
+      const isNew = !group.participants.includes(from);
+      if (isNew) {
         group.participants.push(from);
         state.updateGroup(groupId, { participants: group.participants });
       }
 
       const name = contacts.getNameByAgentId(from) ?? from;
-      log(`${name} joined group ${groupId}`);
+      logger.info(`[AgentLink] ${name} joined group ${groupId.slice(0, 8)} (isNew=${isNew}, hasInbound=${!!channelInbound}, isDriver=${group.driver === config.agent.id})`);
 
-      // Wake agent with join notification + capabilities
-      if (channelInbound && group.driver === config.agent.id) {
+      // Wake agent with join notification (only on first join, prevent duplicates)
+      if (isNew && channelInbound && group.driver === config.agent.id) {
         const caps = state.getParticipantCapabilities(groupId, from);
         const capList = caps && caps.length > 0
-          ? caps.map(c => `${c.name}: ${c.description}`).join(", ")
-          : "unknown (capabilities will appear when their status is published)";
+          ? caps.map(c => `- **${c.name}**: ${c.description}`).join("\n")
+          : "(capabilities loading...)";
         channelInbound.dispatch(groupId, [
-          `[AgentLink] ${name} joined the coordination.`,
-          `Capabilities: ${capList}`,
-          `Goal: ${group.goal}`,
-          `Done when: ${group.done_when}`,
-          `Participants: ${group.participants.map(p => contacts.getNameByAgentId(p) ?? p).join(", ")}`,
+          `**${name}** joined. Goal: "${group.goal}" | Done when: "${group.done_when}"`,
           ``,
-          `You are the driver. Submit jobs to ${name} using agentlink_submit_job with their capabilities.`,
-          `When done_when is met, call agentlink_complete.`,
+          `Their capabilities:`,
+          capList,
+          ``,
+          `Start by submitting jobs to ${name} using agentlink_submit_job with group_id "${groupId}".`,
         ].join("\n"), from);
       }
     }
@@ -221,7 +222,7 @@ function register(api: PluginApi) {
           const name = contacts.getNameByAgentId(from) ?? from;
           const summary = (envelope.payload as Record<string, unknown>)?.text as string ?? "";
           channelInbound.dispatch(groupId,
-            `[AgentLink] Coordination completed by ${name}: ${summary}`,
+            `Coordination complete — ${name}: ${summary}`,
             from);
         }
         mqttService.unsubscribeGroup(groupId);
@@ -301,19 +302,26 @@ function register(api: PluginApi) {
 
       if (driverGroups.length === 0) return {};
 
-      let prompt = "\n\n## AgentLink Coordination Rules (MANDATORY)\n";
-      prompt += "You are the DRIVER of active coordination(s). You MUST follow these rules:\n";
-      prompt += "1. Issue direct jobs (agentlink_submit_job) instead of asking open-ended questions.\n";
-      prompt += "2. Make concrete proposals with specifics (time, place, price), not vague suggestions.\n";
-      prompt += "3. After 3 turns of discussion without a job, proposal, or completion, you MUST force progress.\n";
-      prompt += "4. Declare completion (agentlink_complete) as soon as the done_when condition is met.\n";
-      prompt += "5. Hub-and-spoke: you mediate all coordination. Participants respond to you, not each other.\n\n";
+      let prompt = "\n\n## AgentLink Coordination (MANDATORY)\n\n";
+      prompt += "You are coordinating with other agents. Follow these rules:\n\n";
+      prompt += "### Execution\n";
+      prompt += "- Submit direct jobs (agentlink_submit_job) to get information — don't ask vague questions\n";
+      prompt += "- Make concrete proposals with specifics (time, place, price)\n";
+      prompt += "- After 3 idle turns, force progress with a job or complete\n";
+      prompt += "- Call agentlink_complete immediately when done_when is met\n\n";
+      prompt += "### Presentation (CRITICAL)\n";
+      prompt += "- Work efficiently. Call tools without announcing each step.\n";
+      prompt += "- NEVER say things like \"Waiting for response...\", \"Let me submit a job...\", \"I'm checking...\" — just do it.\n";
+      prompt += "- Present results as clean, conversational updates. Show the OUTCOME, not the process.\n";
+      prompt += "- When you get responses from participants, summarize the key findings naturally.\n";
+      prompt += "- Keep messages short and polished. This conversation is visible to the user.\n\n";
 
       for (const group of driverGroups) {
         if (!group) continue;
-        prompt += `Active: "${group.goal}" | Done when: "${group.done_when}" | Idle turns: ${group.idle_turns}/3\n`;
+        prompt += `### Active: "${group.goal}"\n`;
+        prompt += `Done when: ${group.done_when} | Turns: ${group.idle_turns}/3\n`;
         if (group.idle_turns >= 3) {
-          prompt += `  WARNING: 3 idle turns reached. You MUST take concrete action NOW.\n`;
+          prompt += `⚠️ 3 idle turns — take concrete action NOW.\n`;
         }
       }
 

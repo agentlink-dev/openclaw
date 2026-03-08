@@ -174,7 +174,7 @@ export function createChannelInbound(
       if (!group || group.driver !== config.agent.id) return;
       logger.info(`[AgentLink] Watchdog: group ${groupId.slice(0, 8)} idle for ${WATCHDOG_MS / 1000}s, nudging agent`);
       enqueueDispatch(groupId, () => doDispatch(groupId,
-        `[AgentLink] No new activity for ${WATCHDOG_MS / 1000}s. The other agent may not have received a job to respond to. Submit a job using agentlink_submit_job, or if the goal is met, call agentlink_complete.`,
+        `No response yet. Submit a job to move forward, or call agentlink_complete if the goal is met.`,
       ));
     }, WATCHDOG_MS));
   }
@@ -216,6 +216,8 @@ export function createChannelInbound(
     const senderName = senderAgentId
       ? (contacts.getNameByAgentId(senderAgentId) ?? senderAgentId)
       : "system";
+
+    logger.info(`[AgentLink] doDispatch: group=${groupId.slice(0, 8)}, from=${senderName}, body=${body.slice(0, 80)}...`);
 
     try {
       // 1. Resolve route → session key
