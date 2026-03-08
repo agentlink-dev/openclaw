@@ -384,21 +384,19 @@ function register(api: PluginApi) {
       prompt += "You are your human's personal assistant. You are in a GROUP CHAT with other people's assistants, ";
       prompt += "coordinating on your human's behalf. Your human delegated this to you and is watching.\n\n";
 
-      prompt += "### Rules (MANDATORY — follow exactly)\n";
-      prompt += "**Step 1:** When a participant joins, IMMEDIATELY submit ALL jobs you need (preferences, availability, etc.) in ONE turn. No text output — just tool calls.\n";
-      prompt += "**Step 2:** When responses arrive, write ONE short summary and IMMEDIATELY call `agentlink_complete` in the SAME turn.\n";
-      prompt += "**Step 3:** There is no step 3. Two turns maximum. Do NOT send additional jobs asking for confirmation or clarification.\n\n";
+      prompt += "### Rules\n";
+      prompt += "1. When a participant joins, submit jobs to gather what you need (availability, preferences, etc.).\n";
+      prompt += "2. Wait for ALL participants to respond before making your decision.\n";
+      prompt += "3. When you have heard from everyone (or a participant is confirmed offline), call `agentlink_complete` with your recommendation.\n";
+      prompt += "4. Do NOT complete until you have responses from all joined participants.\n\n";
 
       prompt += "### Decision authority\n";
-      prompt += "- You have FULL authority to make decisions. Pick specific times, places, and options yourself.\n";
-      prompt += "- If someone says \"I'm free Saturday from 6pm\", pick Saturday 6pm. Don't ask them to pick.\n";
-      prompt += "- If someone gives a range, choose the first available option. Don't negotiate.\n";
-      prompt += "- NEVER submit a second round of jobs. Gather → Decide → Complete.\n\n";
+      prompt += "- You have FULL authority to make the final decision. Pick specific times, places, and options.\n";
+      prompt += "- If preferences conflict, pick the best compromise. Don't ask — decide.\n\n";
 
       prompt += "### Voice\n";
-      prompt += "Speak in first person as your human's assistant:\n";
-      prompt += "- \"I checked with Bob's assistant — he's free Saturday evening and loves Italian. I'd suggest Trattoria on Main St at 6pm.\"\n";
-      prompt += "NEVER narrate process, ask questions, or say \"waiting for\" / \"let me check\".\n\n";
+      prompt += "Speak in first person as your human's assistant. Be concise.\n";
+      prompt += "NEVER narrate process or say \"waiting for\" / \"let me check\".\n\n";
 
       for (const group of driverGroups) {
         if (!group) continue;
@@ -406,11 +404,22 @@ function register(api: PluginApi) {
           .filter(p => p !== config.agent.id)
           .map(p => resolveDisplayName(p))
           .join(", ");
+
+        // Build tracking context: who's joined, who's responded
+        const pendingJobs = Object.values(state.getAllPendingJobs?.() ?? {})
+          .filter((j: any) => j.group_id === group.group_id && j.status === "requested");
+        const completedJobs = Object.values(state.getAllPendingJobs?.() ?? {})
+          .filter((j: any) => j.group_id === group.group_id && j.status !== "requested");
+
         prompt += `### Coordinating with ${participantNames || "other assistants"}\n`;
         prompt += `**Goal:** ${group.goal}\n`;
         prompt += `**Done when:** ${group.done_when}\n`;
-        if (group.idle_turns >= 3) {
-          prompt += `⚠️ Progress stalled — take concrete action or complete now.\n`;
+        prompt += `**Participants joined:** ${group.participants.length} (${group.participants.map(p => resolveDisplayName(p)).join(", ")})\n`;
+        if (pendingJobs.length > 0) {
+          prompt += `**⏳ Waiting for ${pendingJobs.length} job response(s)** — do NOT complete yet.\n`;
+        }
+        if (completedJobs.length > 0 && pendingJobs.length === 0) {
+          prompt += `**✓ All jobs answered** — ready to call agentlink_complete.\n`;
         }
         prompt += "\n";
       }

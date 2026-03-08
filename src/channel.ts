@@ -144,8 +144,8 @@ export interface ChannelInbound {
 }
 
 const DEBOUNCE_MS = 1500;
-const WATCHDOG_MS = 10_000; // re-dispatch if no activity for 10s
-const MAX_NUDGES = 3; // auto-complete after this many watchdog nudges
+const WATCHDOG_MS = 300_000; // safety net: 5 minutes of total silence before nudge
+const MAX_NUDGES = 1; // single nudge then auto-complete (safety net only)
 
 export function createChannelInbound(
   config: AgentLinkConfig,
@@ -183,21 +183,19 @@ export function createChannelInbound(
       logger.info(`[AgentLink] Watchdog: group ${groupId.slice(0, 8)} idle ${WATCHDOG_MS / 1000}s, nudge #${nudgeCount}`);
 
       if (nudgeCount >= MAX_NUDGES) {
-        // Auto-complete: the model won't do it, so we force it
-        logger.info(`[AgentLink] Auto-completing group ${groupId.slice(0, 8)} after ${nudgeCount} nudges`);
+        // Safety net auto-complete after prolonged silence
+        logger.info(`[AgentLink] Auto-completing group ${groupId.slice(0, 8)} after ${WATCHDOG_MS / 1000}s silence`);
         nudgeCounts.delete(groupId);
         enqueueDispatch(groupId, () => doDispatch(groupId, "",
           undefined,
-          `[System] Coordination auto-completed. Summarize what you gathered and present your recommendation to the user.`,
+          `[System] Coordination timed out (no activity for ${WATCHDOG_MS / 1000}s). Summarize what you have and call agentlink_complete.`,
         ));
         return;
       }
 
-      // Invisible nudge — empty body for user, actionable for agent
-      const nudgeText = nudgeCount === 1
-        ? `[System] Submit jobs to gather info, or call agentlink_complete if the goal is met. Only tool calls — no text.`
-        : `[System] You already have the info you need. Call agentlink_complete NOW with your recommendation. Do NOT submit more jobs.`;
-      enqueueDispatch(groupId, () => doDispatch(groupId, "", undefined, nudgeText));
+      // Nudge — just remind the agent to wrap up
+      enqueueDispatch(groupId, () => doDispatch(groupId, "", undefined,
+        `[System] No activity for ${WATCHDOG_MS / 1000}s. If you're waiting for participants, they may be offline. Call agentlink_complete with what you have, or submit any remaining jobs.`));
     }, WATCHDOG_MS));
   }
 

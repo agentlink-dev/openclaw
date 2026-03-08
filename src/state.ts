@@ -30,6 +30,7 @@ export interface StateManager {
   removeJob(correlationId: string): void;
   hasPendingJob(correlationId: string): boolean;
   getJobsForGroup(groupId: string): PendingJob[];
+  getAllPendingJobs(): Record<string, PendingJob>;
   checkTimeouts(timeoutMs: number): TimedOutJob[];
 }
 
@@ -164,6 +165,10 @@ export function createState(dataDir: string): StateManager {
 
     getJobsForGroup(groupId) {
       return Object.values(data.pending_jobs).filter((j) => j.group_id === groupId);
+    },
+
+    getAllPendingJobs() {
+      return { ...data.pending_jobs };
     },
 
     checkTimeouts(timeoutMs) {
