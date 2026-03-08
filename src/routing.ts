@@ -43,11 +43,11 @@ export function shouldProcess(
   // Always process if addressed to us directly
   if (msg.to === myAgentId) return true;
 
-  // If broadcast with capability filter: process if we have the capability
-  // OR if we have no capabilities at all (LLM fallback mode — accept everything)
+  // If broadcast with capability filter: process only if we have a matching capability.
+  // Agents with no capabilities do NOT accept broadcast jobs (they have nothing to offer).
   // Uses fuzzy matching: "check_calendar" matches "calendar" (substring or keyword overlap)
   if (msg.to === "group" && msg.payload.capability) {
-    if (myCapabilities.length === 0) return true;
+    if (myCapabilities.length === 0) return false;
     const requested = msg.payload.capability.toLowerCase();
     return myCapabilities.some((c) => {
       const name = c.name.toLowerCase();

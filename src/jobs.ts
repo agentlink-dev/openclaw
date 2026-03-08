@@ -30,6 +30,7 @@ export function createJobManager(
   mqtt: MqttService,
   logger: Logger,
   llmDispatch?: (groupId: string, question: string, senderAgentId: string) => Promise<string>,
+  onJobTimeout?: (groupId: string, correlationId: string) => void,
 ): JobManager {
   return {
     async submitJob(params) {
@@ -66,6 +67,7 @@ export function createJobManager(
         if (state.hasPendingJob(correlationId)) {
           state.completeJob(correlationId, "failed");
           logger.info(`[AgentLink] Job ${correlationId} timed out (${params.capability})`);
+          onJobTimeout?.(params.groupId, correlationId);
         }
       }, config.jobTimeoutMs);
 

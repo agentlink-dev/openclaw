@@ -158,6 +158,7 @@ export function createTools(
         done_when: doneWhen,
         intent_id: intentId,
         participants: [config.agent.id], // only driver initially — others added on join
+        expected_participants: participants.length, // how many non-driver participants we invited
         status: "active",
         idle_turns: 0,
         created_at: new Date().toISOString(),
@@ -292,6 +293,7 @@ export function createTools(
         done_when: "",
         intent_id: "",
         participants: [invite.from],
+        expected_participants: 0, // joining agent doesn't know the full count
         status: "active",
         idle_turns: 0,
         created_at: new Date().toISOString(),

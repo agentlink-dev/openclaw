@@ -87,8 +87,9 @@ function register(api: PluginApi) {
     }
   }
 
-  // Registry for remote agents' display names (from MQTT status messages)
+  // Registry for remote agents' display names and descriptions (from MQTT status messages)
   const remoteDisplayNames = new Map<string, string>();
+  const remoteDescriptions = new Map<string, string>();
 
   /** Resolve display name for a remote agent: status display_name → contact name → agent_id */
   function resolveDisplayName(agentId: string): string {
@@ -127,7 +128,33 @@ function register(api: PluginApi) {
       }
     : undefined;
 
-  const jobs = createJobManager(config, state, mqttService, logger, llmDispatch);
+  // Check if all expected participants have joined, all have been queried,
+  // and all jobs are resolved. If so, dispatch a completion nudge to the driver.
+  function checkAllDone(groupId: string) {
+    if (!channelInbound) return;
+    const group = state.getGroup(groupId);
+    if (!group || group.driver !== config.agent.id) return;
+
+    const groupJobs = state.getJobsForGroup(groupId);
+    const stillPending = groupJobs.filter(j => j.status === "requested");
+    if (stillPending.length > 0 || groupJobs.length === 0) return;
+
+    const expectedTotal = (group.expected_participants ?? 0) + 1; // +1 for driver
+    if (group.participants.length < expectedTotal) return;
+
+    // Require at least one job per non-driver participant
+    const nonDriverCount = group.participants.length - 1;
+    if (groupJobs.length < nonDriverCount) return;
+
+    // All participants joined, all queried, all jobs resolved
+    channelInbound.dispatch(groupId, "", undefined,
+      `[System] All ${groupJobs.length} job responses received from all ${nonDriverCount} participants. Call agentlink_complete NOW with your recommendation.`);
+  }
+
+  const jobs = createJobManager(config, state, mqttService, logger, llmDispatch, (groupId) => {
+    // When a job times out, check if we can now complete
+    checkAllDone(groupId);
+  });
 
   // Wire inbound message handling
   mqttService.onGroupMessage((msg) => {
@@ -150,6 +177,8 @@ function register(api: PluginApi) {
         channelInbound.dispatch(msg.group_id,
           `**${displayName}:** ${result}`,
           msg.from);
+        // After dispatching the response, check if all work is done
+        checkAllDone(msg.group_id);
       }
       return;
     }
@@ -203,10 +232,14 @@ function register(api: PluginApi) {
     const agentId = status.agent_id as string;
     if (!agentId || agentId === config.agent.id) return;
 
-    // Store display name from remote agent's status message
+    // Store display name and description from remote agent's status message
     const displayName = status.display_name as string | undefined;
     if (displayName) {
       remoteDisplayNames.set(agentId, displayName);
+    }
+    const description = status.description as string | undefined;
+    if (description) {
+      remoteDescriptions.set(agentId, description);
     }
 
     const capabilities = status.capabilities as Array<{ name: string; description: string }> | undefined;
@@ -248,14 +281,18 @@ function register(api: PluginApi) {
           ? caps.map(c => `- **${c.name}**: ${c.description}`).join("\n")
           : "(capabilities loading...)";
 
+        // Include who this agent represents (from their status description)
+        const agentDesc = remoteDescriptions.get(from);
+        const whoLine = agentDesc ? ` (${agentDesc})` : "";
+
         // Empty body = invisible "You" bubble. Agent gets full context via agentBody.
         const agentContext = [
-          `${displayName} joined. Goal: "${group.goal}" | Done when: "${group.done_when}"`,
+          `${displayName}${whoLine} joined. Goal: "${group.goal}" | Done when: "${group.done_when}"`,
           ``,
           `What they can help with:`,
           capList,
           ``,
-          `[System] Submit ALL needed jobs NOW using agentlink_submit_job (group_id: "${groupId}"). Do NOT output any text — only tool calls.`,
+          `[System] Submit jobs to ${displayName} using agentlink_submit_job (group_id: "${groupId}", target: "${from}"). Only ask them about THEIR human's info. Do NOT output any text — only tool calls.`,
         ].join("\n");
         channelInbound.dispatch(groupId, "", from, agentContext);
       }
@@ -304,6 +341,7 @@ function register(api: PluginApi) {
               done_when: "",
               intent_id: "",
               participants: [invite.from],
+              expected_participants: 0, // joining agent doesn't know the full count
               status: "active",
               idle_turns: 0,
               created_at: new Date().toISOString(),
@@ -411,15 +449,22 @@ function register(api: PluginApi) {
         const completedJobs = Object.values(state.getAllPendingJobs?.() ?? {})
           .filter((j: any) => j.group_id === group.group_id && j.status !== "requested");
 
+        const joinedCount = group.participants.length - 1; // exclude driver
+        const expectedCount = group.expected_participants;
+        const allJoined = joinedCount >= expectedCount;
+
         prompt += `### Coordinating with ${participantNames || "other assistants"}\n`;
         prompt += `**Goal:** ${group.goal}\n`;
         prompt += `**Done when:** ${group.done_when}\n`;
-        prompt += `**Participants joined:** ${group.participants.length} (${group.participants.map(p => resolveDisplayName(p)).join(", ")})\n`;
+        prompt += `**Participants:** ${joinedCount}/${expectedCount} joined (${group.participants.map(p => resolveDisplayName(p)).join(", ")})\n`;
+        if (!allJoined) {
+          prompt += `**⏳ Waiting for ${expectedCount - joinedCount} more participant(s) to join** — do NOT complete yet.\n`;
+        }
         if (pendingJobs.length > 0) {
           prompt += `**⏳ Waiting for ${pendingJobs.length} job response(s)** — do NOT complete yet.\n`;
         }
-        if (completedJobs.length > 0 && pendingJobs.length === 0) {
-          prompt += `**✓ All jobs answered** — ready to call agentlink_complete.\n`;
+        if (allJoined && completedJobs.length > 0 && pendingJobs.length === 0) {
+          prompt += `**✓ All participants joined and all jobs answered** — ready to call agentlink_complete.\n`;
         }
         prompt += "\n";
       }
