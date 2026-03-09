@@ -5,8 +5,9 @@ import type { AgentLinkConfig } from "./types.js";
 import { resolveIdentity } from "./identity.js";
 import { createContacts } from "./contacts.js";
 import { createMqttService } from "./mqtt-service.js";
-import { createMessageTool, createWhoisTool, createInviteTool } from "./tools.js";
-import { handleIncomingEnvelope } from "./channel.js";
+import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool } from "./tools.js";
+import { handleIncomingEnvelope, dispatchToSession } from "./channel.js";
+import type { ChannelApi } from "./channel.js";
 import { resolveInviteCode } from "./invite.js";
 import type { Logger } from "./mqtt-client.js";
 
@@ -35,9 +36,7 @@ interface PluginApi {
   registerChannel?(registration: { plugin: unknown }): void;
   registerCli?(registrar: (ctx: { program: unknown }) => void, opts?: { commands?: string[] }): void;
   runtime?: {
-    channel?: {
-      appendMessages(channelId: string, messages: Array<{ role: string; content: string }>): void;
-    };
+    channel?: ChannelApi;
   };
 }
 
@@ -99,9 +98,16 @@ function register(api: PluginApi) {
           (text) => {
             // Inject message into OC session via channel API
             if (api.runtime?.channel) {
-              api.runtime.channel.appendMessages("agentlink", [
-                { role: "user", content: text },
-              ]);
+              dispatchToSession(
+                text,
+                envelope.from,
+                config,
+                api.runtime.channel,
+                api.config,
+                api.logger,
+              ).catch((err) => {
+                api.logger.warn(`[AgentLink] Failed to dispatch to session: ${err}`);
+              });
             } else {
               // Fallback: log it (channel API may not be available)
               api.logger.info(`[AgentLink] Inbound (no channel): ${text}`);
@@ -122,6 +128,7 @@ function register(api: PluginApi) {
   api.registerTool(createMessageTool(config, mqttClient, contacts, api.logger));
   api.registerTool(createWhoisTool(config, mqttClient, contacts, api.logger));
   api.registerTool(createInviteTool(config, mqttClient, api.logger));
+  api.registerTool(createJoinTool(config, mqttClient, contacts, api.logger));
 
   // --- CLI ---
   if (api.registerCli) {

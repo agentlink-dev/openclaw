@@ -2,6 +2,7 @@ import type { AgentLinkConfig, AgentStatus } from "./types.js";
 import { createEnvelope, createInvitePayload, TOPICS } from "./types.js";
 import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
+import { resolveInviteCode } from "./invite.js";
 
 // ---------------------------------------------------------------------------
 // OC Tool types (minimal interface matching OpenClaw's tool API)
@@ -208,6 +209,47 @@ export function createInviteTool(
         const msg = err instanceof Error ? err.message : String(err);
         logger.error(`[AgentLink] Failed to publish invite: ${msg}`);
         return text(`Failed to generate invite: ${msg}`);
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tool: agentlink_join
+// ---------------------------------------------------------------------------
+
+export function createJoinTool(
+  config: AgentLinkConfig,
+  mqttClient: MqttClient,
+  contacts: ContactsStore,
+  logger: Logger,
+): ToolDefinition {
+  return {
+    name: "agentlink_join",
+    label: "AgentLink: Join via Invite Code",
+    description:
+      "Join AgentLink using a 6-character invite code shared by another person. This adds them as a contact and notifies their agent so you become mutual contacts.",
+    parameters: {
+      type: "object",
+      required: ["code"],
+      properties: {
+        code: {
+          type: "string",
+          description: "The 6-character invite code (e.g., E8RRN8)",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const code = (params.code as string)?.trim().toUpperCase();
+      if (!code) return text("Error: 'code' parameter is required.");
+
+      try {
+        const result = await resolveInviteCode(code, config, mqttClient, contacts, logger);
+        return text(result.message);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(`[AgentLink] Failed to join via invite: ${msg}`);
+        return text(`Failed to join: ${msg}`);
       }
     },
   };
