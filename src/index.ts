@@ -134,7 +134,12 @@ function register(api: PluginApi) {
                 return;
               }
 
-              // Dispatch to A2A session with outbound capture
+              // Dispatch to A2A session with outbound capture.
+              // When there's a pending relay (we sent a message and are awaiting the
+              // response), suppress outbound capture — the agent processes the message
+              // in its A2A session but does NOT auto-respond via MQTT. The relay
+              // delivers the response to the human's main session instead.
+              const hasPendingRelay = a2aManager.hasPendingRelay(senderAgentId);
               dispatchToSession(
                 text,
                 senderAgentId,
@@ -143,7 +148,7 @@ function register(api: PluginApi) {
                 api.config,
                 api.logger,
                 {
-                  mqttClient,
+                  mqttClient: hasPendingRelay ? undefined : mqttClient,
                   a2aManager,
                   contacts,
                 },

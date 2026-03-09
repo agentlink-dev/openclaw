@@ -8,7 +8,7 @@ import type { Logger } from "./mqtt-client.js";
 // - Pending relays (auto-relay response back to main session)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MAX_EXCHANGES = 5;
+const DEFAULT_MAX_EXCHANGES = 20;
 
 export interface A2ASessionManager {
   /** Record an exchange with a contact. Returns the new count. */

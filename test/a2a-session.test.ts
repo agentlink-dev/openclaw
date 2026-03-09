@@ -26,9 +26,9 @@ describe("A2A Session Manager", () => {
       expect(mgr.getExchangeCount("agent-y")).toBe(1);
     });
 
-    it("pauses at default limit (5)", () => {
+    it("pauses at default limit (20)", () => {
       const mgr = createA2ASessionManager(noopLogger);
-      for (let i = 0; i < 4; i++) mgr.recordExchange("agent-x");
+      for (let i = 0; i < 19; i++) mgr.recordExchange("agent-x");
       expect(mgr.isPaused("agent-x")).toBe(false);
       mgr.recordExchange("agent-x");
       expect(mgr.isPaused("agent-x")).toBe(true);
@@ -45,7 +45,7 @@ describe("A2A Session Manager", () => {
 
     it("reset clears the count", () => {
       const mgr = createA2ASessionManager(noopLogger);
-      for (let i = 0; i < 5; i++) mgr.recordExchange("agent-x");
+      for (let i = 0; i < 20; i++) mgr.recordExchange("agent-x");
       expect(mgr.isPaused("agent-x")).toBe(true);
       mgr.reset("agent-x");
       expect(mgr.isPaused("agent-x")).toBe(false);
