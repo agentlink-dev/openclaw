@@ -153,6 +153,7 @@ export async function dispatchToSession(
               config.humanName,
               senderAgentId,
               responseText,
+              "auto",
             );
             const topic = TOPICS.inbox(senderAgentId, config.agentId);
 
@@ -210,8 +211,9 @@ export async function relayToMainSession(
   ].join("\n");
 
   try {
-    // Route to the webchat channel so the relay appears in the human's main chat.
+    // Route to the webchat session so the relay appears in the human's main chat.
     // Falls back to agentlink channel if webchat routing fails.
+    // TODO: fix session rename — dispatching here overwrites the session label.
     let route;
     try {
       route = channelApi.routing.resolveAgentRoute({
@@ -220,7 +222,6 @@ export async function relayToMainSession(
         accountId: config.agentId,
       });
     } catch {
-      // Fallback: use agentlink channel with relay peer
       route = channelApi.routing.resolveAgentRoute({
         cfg: ocConfig,
         channel: "agentlink",

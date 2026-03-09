@@ -58,6 +58,8 @@ export function parseSenderFromTopic(topic: string): string | null {
 
 export type MessageType = "message" | "contact_exchange";
 
+export type MessageOrigin = "tool" | "auto";
+
 export interface MessageEnvelope {
   version: 1;
   type: MessageType;
@@ -65,6 +67,7 @@ export interface MessageEnvelope {
   from_name: string;
   to: string;
   text?: string;
+  origin?: MessageOrigin;
   ts: string;
   message_id: string;
 }
@@ -75,6 +78,7 @@ export function createEnvelope(
   fromName: string,
   to: string,
   text?: string,
+  origin?: MessageOrigin,
 ): MessageEnvelope {
   return {
     version: 1,
@@ -83,6 +87,7 @@ export function createEnvelope(
     from_name: fromName,
     to,
     text,
+    origin,
     ts: new Date().toISOString(),
     message_id: uuid(),
   };

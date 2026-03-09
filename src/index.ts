@@ -105,6 +105,12 @@ function register(api: PluginApi) {
           (text, senderAgentId) => {
             // Inject message into OC session via channel API
             if (api.runtime?.channel) {
+              // If this is a human-initiated message (tool origin), reset the exchange counter
+              // — the other side's human decided to continue the conversation.
+              if (envelope.origin === "tool" && a2aManager.isPaused(senderAgentId)) {
+                a2aManager.reset(senderAgentId);
+              }
+
               // Check if conversation is paused (exchange limit)
               if (a2aManager.isPaused(senderAgentId)) {
                 const contact = contacts.findByAgentId(senderAgentId);

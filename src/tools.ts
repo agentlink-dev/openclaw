@@ -36,11 +36,25 @@ export function createMessageTool(
   logger: Logger,
   a2aManager?: A2ASessionManager,
 ): ToolDefinition {
+  // Build dynamic description with current contacts
+  const all = contacts.getAll();
+  const contactEntries = Object.entries(all);
+  let description =
+    "Send a message to another agent via AgentLink. Use the contact's name or their agent ID. The message will be delivered to their agent, who will respond automatically.";
+  if (contactEntries.length > 0) {
+    const contactList = contactEntries
+      .map(([name, entry]) => {
+        const human = entry.human_name ? ` (${entry.human_name}'s agent)` : "";
+        return `  - "${name}"${human}`;
+      })
+      .join("\n");
+    description += `\n\nYour contacts:\n${contactList}`;
+  }
+
   return {
     name: "agentlink_message",
     label: "AgentLink: Send Message",
-    description:
-      "Send a message to another agent via AgentLink. Use the contact's name (e.g., 'sarah') or their agent ID. The message will be delivered to their agent, who will respond automatically.",
+    description,
     parameters: {
       type: "object",
       required: ["to", "text"],
@@ -74,8 +88,13 @@ export function createMessageTool(
         );
       }
 
-      // Build and send envelope
-      const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText);
+      // Reset exchange counter if conversation was paused — human is actively continuing
+      if (a2aManager?.isPaused(agentId)) {
+        a2aManager.reset(agentId);
+      }
+
+      // Build and send envelope — origin: "tool" tells receiver this is human-initiated
+      const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool");
       const topic = TOPICS.inbox(agentId, config.agentId);
 
       try {
