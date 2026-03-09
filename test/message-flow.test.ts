@@ -116,7 +116,7 @@ describe("Full message flow (simulated)", () => {
       expect(formatted).toContain("Rupul");
       expect(formatted).toContain(ARYA_ID);
       expect(formatted).toContain("Is Cathy free Saturday?");
-      expect(formatted).toContain("do not send follow-up AgentLink messages");
+      expect(formatted).toContain("your text response will be captured and sent back automatically");
     } finally {
       await disconnect(clientA);
       await disconnect(clientB);
@@ -141,7 +141,7 @@ describe("Full message flow (simulated)", () => {
     const exchange = createEnvelope("contact_exchange", ARYA_ID, "Rupul", BRIENNE_ID);
     const injected: string[] = [];
 
-    handleIncomingEnvelope(exchange, brienneConfig, brienneContacts, logger, (text) => {
+    handleIncomingEnvelope(exchange, brienneConfig, brienneContacts, logger, (text, _senderAgentId) => {
       injected.push(text);
     });
 

@@ -6,8 +6,14 @@ import { resolveIdentity } from "./identity.js";
 import { createContacts } from "./contacts.js";
 import { createMqttService } from "./mqtt-service.js";
 import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool } from "./tools.js";
-import { handleIncomingEnvelope, dispatchToSession } from "./channel.js";
+import {
+  handleIncomingEnvelope,
+  dispatchToSession,
+  relayToMainSession,
+  formatPausedMessage,
+} from "./channel.js";
 import type { ChannelApi } from "./channel.js";
+import { createA2ASessionManager } from "./a2a-session.js";
 import { resolveInviteCode } from "./invite.js";
 import type { Logger } from "./mqtt-client.js";
 
@@ -79,6 +85,7 @@ function register(api: PluginApi) {
   const contacts = createContacts(config.dataDir);
   const mqttService = createMqttService(config, api.logger);
   const mqttClient = mqttService.getClient();
+  const a2aManager = createA2ASessionManager(api.logger);
 
   api.logger.info(`[AgentLink] Agent: ${config.agentId} (${config.humanName})`);
 
@@ -95,17 +102,65 @@ function register(api: PluginApi) {
           config,
           contacts,
           api.logger,
-          (text) => {
+          (text, senderAgentId) => {
             // Inject message into OC session via channel API
             if (api.runtime?.channel) {
+              // Check if conversation is paused (exchange limit)
+              if (a2aManager.isPaused(senderAgentId)) {
+                const contact = contacts.findByAgentId(senderAgentId);
+                const pausedMsg = formatPausedMessage(
+                  senderAgentId,
+                  contact?.entry.human_name,
+                  a2aManager.getExchangeCount(senderAgentId),
+                );
+                // Relay the pause notification to main session
+                relayToMainSession(
+                  pausedMsg,
+                  senderAgentId,
+                  contact?.entry.human_name,
+                  config,
+                  api.runtime.channel,
+                  api.config,
+                  api.logger,
+                ).catch((err) => {
+                  api.logger.warn(`[AgentLink] Failed to relay pause notification: ${err}`);
+                });
+                return;
+              }
+
+              // Dispatch to A2A session with outbound capture
               dispatchToSession(
                 text,
-                envelope.from,
+                senderAgentId,
                 config,
                 api.runtime.channel,
                 api.config,
                 api.logger,
-              ).catch((err) => {
+                {
+                  mqttClient,
+                  a2aManager,
+                  contacts,
+                },
+              ).then(() => {
+                // After dispatch: check if we have a pending relay for this sender
+                if (a2aManager.consumePendingRelay(senderAgentId)) {
+                  // This was a response to a message we sent — relay to main session
+                  // Pause the A2A conversation so no more auto-responses go out
+                  a2aManager.pause(senderAgentId);
+                  const contact = contacts.findByAgentId(senderAgentId);
+                  relayToMainSession(
+                    envelope.text ?? "(no response)",
+                    senderAgentId,
+                    contact?.entry.human_name ?? envelope.from_name,
+                    config,
+                    api.runtime!.channel!,
+                    api.config,
+                    api.logger,
+                  ).catch((err) => {
+                    api.logger.warn(`[AgentLink] Failed to relay response: ${err}`);
+                  });
+                }
+              }).catch((err) => {
                 api.logger.warn(`[AgentLink] Failed to dispatch to session: ${err}`);
               });
             } else {
@@ -125,7 +180,7 @@ function register(api: PluginApi) {
   });
 
   // --- Tools ---
-  api.registerTool(createMessageTool(config, mqttClient, contacts, api.logger));
+  api.registerTool(createMessageTool(config, mqttClient, contacts, api.logger, a2aManager));
   api.registerTool(createWhoisTool(config, mqttClient, contacts, api.logger));
   api.registerTool(createInviteTool(config, mqttClient, api.logger));
   api.registerTool(createJoinTool(config, mqttClient, contacts, api.logger));

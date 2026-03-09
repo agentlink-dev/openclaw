@@ -2,6 +2,7 @@ import type { AgentLinkConfig, AgentStatus } from "./types.js";
 import { createEnvelope, createInvitePayload, TOPICS } from "./types.js";
 import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
+import type { A2ASessionManager } from "./a2a-session.js";
 import { resolveInviteCode } from "./invite.js";
 
 // ---------------------------------------------------------------------------
@@ -33,6 +34,7 @@ export function createMessageTool(
   mqttClient: MqttClient,
   contacts: ContactsStore,
   logger: Logger,
+  a2aManager?: A2ASessionManager,
 ): ToolDefinition {
   return {
     name: "agentlink_message",
@@ -81,8 +83,14 @@ export function createMessageTool(
         const contact = contacts.findByAgentId(agentId);
         const label = contact ? `${contact.name}'s agent (${agentId})` : agentId;
         logger.info(`[AgentLink] Message sent to ${label}`);
+
+        // Set pending relay — when the response comes back, it'll be relayed to main session
+        if (a2aManager) {
+          a2aManager.setPendingRelay(agentId);
+        }
+
         return text(
-          `Message sent to ${label}. You'll receive their response automatically via AgentLink.`
+          `Message sent to ${label}. Their response will appear in the AgentLink conversation and be relayed back here.`
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
