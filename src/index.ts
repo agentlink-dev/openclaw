@@ -1,19 +1,20 @@
-import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { AgentLinkConfig } from "./types.js";
 import { resolveIdentity } from "./identity.js";
 import { createContacts } from "./contacts.js";
 import { createMqttService } from "./mqtt-service.js";
-import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool } from "./tools.js";
+import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool, createLogsTool } from "./tools.js";
 import {
   handleIncomingEnvelope,
   dispatchToSession,
   relayToMainSession,
-  formatPausedMessage,
+  formatConsolidatedSummaryPrompt,
+  formatStatusPrompt,
 } from "./channel.js";
 import type { ChannelApi } from "./channel.js";
 import { createA2ASessionManager } from "./a2a-session.js";
+import { createA2ALogWriter } from "./a2a-log.js";
 import { resolveInviteCode } from "./invite.js";
 import type { Logger } from "./mqtt-client.js";
 
@@ -86,6 +87,109 @@ function register(api: PluginApi) {
   const mqttService = createMqttService(config, api.logger);
   const mqttClient = mqttService.getClient();
   const a2aManager = createA2ASessionManager(api.logger);
+  const logWriter = createA2ALogWriter(config.dataDir, config.agentId, config.humanName);
+
+  // ---------------------------------------------------------------------------
+  // Timer management: status updates (15s/45s), no-response (60s), silence (30s)
+  // ---------------------------------------------------------------------------
+
+  interface ContactTimers {
+    status15?: ReturnType<typeof setTimeout>;
+    status45?: ReturnType<typeof setTimeout>;
+    noResponse60?: ReturnType<typeof setTimeout>;
+    silence30?: ReturnType<typeof setTimeout>;
+  }
+  const timers = new Map<string, ContactTimers>();
+
+  function clearContactTimers(agentId: string) {
+    const t = timers.get(agentId);
+    if (t) {
+      if (t.status15) clearTimeout(t.status15);
+      if (t.status45) clearTimeout(t.status45);
+      if (t.noResponse60) clearTimeout(t.noResponse60);
+      if (t.silence30) clearTimeout(t.silence30);
+      timers.delete(agentId);
+    }
+  }
+
+  function startSilenceTimer(contactAgentId: string) {
+    const t = timers.get(contactAgentId) ?? {};
+    if (t.silence30) clearTimeout(t.silence30);
+    t.silence30 = setTimeout(() => {
+      // Silence timeout — conversation naturally ended
+      if (a2aManager.isPaused(contactAgentId) || !api.runtime?.channel) return;
+
+      const ctx = a2aManager.getOriginContext(contactAgentId);
+      if (ctx) {
+        // Human-initiated: relay consolidated summary
+        a2aManager.pause(contactAgentId);
+        const contact = contacts.findByAgentId(contactAgentId);
+        const contactName = contact?.entry.human_name;
+        const log = logWriter.readLog(contactAgentId);
+        const count = a2aManager.getExchangeCount(contactAgentId);
+        const relayText = formatConsolidatedSummaryPrompt(
+          contactAgentId, contactName, count, log, "silence",
+        );
+        relayToMainSession(
+          relayText, contactAgentId, contactName, config,
+          api.runtime.channel, api.config, api.logger,
+        ).catch((err) => {
+          api.logger.warn(`[AgentLink] Failed to relay silence summary: ${err}`);
+        });
+        clearContactTimers(contactAgentId);
+      }
+      // Auto-respond (no origin context): log file already written. No relay.
+    }, 30_000);
+    timers.set(contactAgentId, t);
+  }
+
+  // Called when agentlink_message tool fires — starts 15s/45s/60s timers
+  function onA2AStarted(contactAgentId: string) {
+    if (!api.runtime?.channel) return;
+    clearContactTimers(contactAgentId);
+
+    const contact = contacts.findByAgentId(contactAgentId);
+    const contactName = contact?.entry.human_name;
+    const t: ContactTimers = {};
+
+    t.status15 = setTimeout(() => {
+      if (a2aManager.isPaused(contactAgentId) || !api.runtime?.channel) return;
+      const prompt = formatStatusPrompt(contactAgentId, contactName, 1);
+      relayToMainSession(
+        prompt, contactAgentId, contactName, config,
+        api.runtime.channel, api.config, api.logger,
+      ).catch(() => {});
+    }, 15_000);
+
+    t.status45 = setTimeout(() => {
+      if (a2aManager.isPaused(contactAgentId) || !api.runtime?.channel) return;
+      const prompt = formatStatusPrompt(contactAgentId, contactName, 2);
+      relayToMainSession(
+        prompt, contactAgentId, contactName, config,
+        api.runtime.channel, api.config, api.logger,
+      ).catch(() => {});
+    }, 45_000);
+
+    t.noResponse60 = setTimeout(() => {
+      if (a2aManager.isPaused(contactAgentId) || !api.runtime?.channel) return;
+      const count = a2aManager.getExchangeCount(contactAgentId);
+      if (count === 0) {
+        // No exchanges at all — remote agent never responded
+        a2aManager.pause(contactAgentId);
+        const log = logWriter.readLog(contactAgentId);
+        const relayText = formatConsolidatedSummaryPrompt(
+          contactAgentId, contactName, count, log, "no_response",
+        );
+        relayToMainSession(
+          relayText, contactAgentId, contactName, config,
+          api.runtime.channel, api.config, api.logger,
+        ).catch(() => {});
+        clearContactTimers(contactAgentId);
+      }
+    }, 60_000);
+
+    timers.set(contactAgentId, t);
+  }
 
   api.logger.info(`[AgentLink] Agent: ${config.agentId} (${config.humanName})`);
 
@@ -95,7 +199,7 @@ function register(api: PluginApi) {
     async start() {
       await mqttService.start();
 
-      // Handle incoming messages
+      // Handle incoming messages — free-running multi-turn A2A
       mqttService.onMessage((envelope) => {
         handleIncomingEnvelope(
           envelope,
@@ -103,81 +207,99 @@ function register(api: PluginApi) {
           contacts,
           api.logger,
           (text, senderAgentId) => {
-            // Inject message into OC session via channel API
-            if (api.runtime?.channel) {
-              // If this is a human-initiated message (tool origin), reset the exchange counter
-              // — the other side's human decided to continue the conversation.
-              if (envelope.origin === "tool" && a2aManager.isPaused(senderAgentId)) {
-                a2aManager.reset(senderAgentId);
-              }
-
-              // Check if conversation is paused (exchange limit)
-              if (a2aManager.isPaused(senderAgentId)) {
-                const contact = contacts.findByAgentId(senderAgentId);
-                const pausedMsg = formatPausedMessage(
-                  senderAgentId,
-                  contact?.entry.human_name,
-                  a2aManager.getExchangeCount(senderAgentId),
-                );
-                // Relay the pause notification to main session
-                relayToMainSession(
-                  pausedMsg,
-                  senderAgentId,
-                  contact?.entry.human_name,
-                  config,
-                  api.runtime.channel,
-                  api.config,
-                  api.logger,
-                ).catch((err) => {
-                  api.logger.warn(`[AgentLink] Failed to relay pause notification: ${err}`);
-                });
-                return;
-              }
-
-              // Dispatch to A2A session with outbound capture.
-              // When there's a pending relay (we sent a message and are awaiting the
-              // response), suppress outbound capture — the agent processes the message
-              // in its A2A session but does NOT auto-respond via MQTT. The relay
-              // delivers the response to the human's main session instead.
-              const hasPendingRelay = a2aManager.hasPendingRelay(senderAgentId);
-              dispatchToSession(
-                text,
-                senderAgentId,
-                config,
-                api.runtime.channel,
-                api.config,
-                api.logger,
-                {
-                  mqttClient: hasPendingRelay ? undefined : mqttClient,
-                  a2aManager,
-                  contacts,
-                },
-              ).then(() => {
-                // After dispatch: check if we have a pending relay for this sender
-                if (a2aManager.consumePendingRelay(senderAgentId)) {
-                  // This was a response to a message we sent — relay to main session
-                  // Pause the A2A conversation so no more auto-responses go out
-                  a2aManager.pause(senderAgentId);
-                  const contact = contacts.findByAgentId(senderAgentId);
-                  relayToMainSession(
-                    envelope.text ?? "(no response)",
-                    senderAgentId,
-                    contact?.entry.human_name ?? envelope.from_name,
-                    config,
-                    api.runtime!.channel!,
-                    api.config,
-                    api.logger,
-                  ).catch((err) => {
-                    api.logger.warn(`[AgentLink] Failed to relay response: ${err}`);
-                  });
-                }
-              }).catch((err) => {
-                api.logger.warn(`[AgentLink] Failed to dispatch to session: ${err}`);
-              });
-            } else {
-              // Fallback: log it (channel API may not be available)
+            if (!api.runtime?.channel) {
               api.logger.info(`[AgentLink] Inbound (no channel): ${text}`);
+              return;
             }
+
+            // Log inbound message to markdown (only for actual messages)
+            const contact = contacts.findByAgentId(senderAgentId);
+            const contactName = contact?.entry.human_name ?? envelope.from_name ?? senderAgentId;
+            if (envelope.type === "message" && envelope.text) {
+              logWriter.logInbound(senderAgentId, contactName, envelope.text);
+            }
+
+            // If tool-origin (other side's human initiated), reset exchange counter
+            if (envelope.origin === "tool" && a2aManager.isPaused(senderAgentId)) {
+              a2aManager.reset(senderAgentId);
+            }
+
+            // If paused (exchange limit already hit), drop the message
+            if (a2aManager.isPaused(senderAgentId)) {
+              api.logger.info(`[AgentLink] Dropping message from ${senderAgentId} — conversation paused`);
+              return;
+            }
+
+            // Reset silence timer on each inbound (conversation still active)
+            startSilenceTimer(senderAgentId);
+
+            // Dispatch to A2A session — always with outbound capture enabled
+            // Track if CONVERSATION_COMPLETE already handled the relay
+            let completionRelayed = false;
+
+            dispatchToSession(
+              text,
+              senderAgentId,
+              config,
+              api.runtime.channel,
+              api.config,
+              api.logger,
+              {
+                mqttClient,
+                a2aManager,
+                contacts,
+                logWriter,
+                onOutboundSent: () => startSilenceTimer(senderAgentId),
+                onConversationComplete: () => {
+                  // Agent signaled [CONVERSATION_COMPLETE] — pause conversation
+                  if (completionRelayed || a2aManager.isPaused(senderAgentId)) return;
+                  completionRelayed = true;
+                  a2aManager.pause(senderAgentId);
+                  clearContactTimers(senderAgentId);
+
+                  // Only relay if human-initiated (origin context exists).
+                  // Auto-respond side (no origin) just pauses — no relay to human.
+                  const originCtx = a2aManager.getOriginContext(senderAgentId);
+                  if (!originCtx || !api.runtime?.channel) {
+                    api.logger.info(`[AgentLink] A2A with ${senderAgentId} completed (auto-respond, no relay)`);
+                    return;
+                  }
+
+                  const cInfo = contacts.findByAgentId(senderAgentId);
+                  const cName = cInfo?.entry.human_name;
+                  const log = logWriter.readLog(senderAgentId);
+                  const count = a2aManager.getExchangeCount(senderAgentId);
+                  const relayText = formatConsolidatedSummaryPrompt(
+                    senderAgentId, cName, count, log, "silence",
+                  );
+                  api.logger.info(`[AgentLink] A2A with ${senderAgentId} completed — relaying to human`);
+                  relayToMainSession(
+                    relayText, senderAgentId, cName,
+                    config, api.runtime.channel, api.config, api.logger,
+                  ).catch((err) => {
+                    api.logger.warn(`[AgentLink] Failed to relay completion summary: ${err}`);
+                  });
+                },
+              },
+            ).then(() => {
+              // After dispatch: if exchange limit was just hit AND completion didn't already relay
+              if (!completionRelayed && a2aManager.isPaused(senderAgentId) && api.runtime?.channel) {
+                const log = logWriter.readLog(senderAgentId);
+                const count = a2aManager.getExchangeCount(senderAgentId);
+                const relayText = formatConsolidatedSummaryPrompt(
+                  senderAgentId, contact?.entry.human_name, count, log, "exchange_limit",
+                );
+                relayToMainSession(
+                  relayText, senderAgentId, contact?.entry.human_name,
+                  config, api.runtime.channel, api.config, api.logger,
+                ).catch((err) => {
+                  api.logger.warn(`[AgentLink] Failed to relay exchange limit summary: ${err}`);
+                });
+                clearContactTimers(senderAgentId);
+              }
+            }).catch((err) => {
+              api.logger.warn(`[AgentLink] Failed to dispatch to session: ${err}`);
+            });
           },
         );
       });
@@ -191,10 +313,11 @@ function register(api: PluginApi) {
   });
 
   // --- Tools ---
-  api.registerTool(createMessageTool(config, mqttClient, contacts, api.logger, a2aManager));
+  api.registerTool(createMessageTool(config, mqttClient, contacts, api.logger, a2aManager, onA2AStarted));
   api.registerTool(createWhoisTool(config, mqttClient, contacts, api.logger));
   api.registerTool(createInviteTool(config, mqttClient, api.logger));
   api.registerTool(createJoinTool(config, mqttClient, contacts, api.logger));
+  api.registerTool(createLogsTool(config, contacts, logWriter));
 
   // --- CLI ---
   if (api.registerCli) {

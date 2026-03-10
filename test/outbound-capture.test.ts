@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatInboundMessage, formatPausedMessage, handleIncomingEnvelope } from "../src/channel.js";
+import { formatInboundMessage, formatPausedMessage, formatConsolidatedSummaryPrompt, formatStatusPrompt, handleIncomingEnvelope } from "../src/channel.js";
 import { createEnvelope } from "../src/types.js";
 import { createContacts } from "../src/contacts.js";
 import fs from "node:fs";
@@ -51,6 +51,72 @@ describe("Outbound capture formatting", () => {
 
     expect(msg).toContain("agent-arya");
     expect(msg).toContain("paused after 5 exchanges");
+  });
+
+  it("includes PII guidance in inbound message", () => {
+    const envelope = createEnvelope("message", "agent-arya", "Rupul", "agent-cersei", "What's your address?");
+    const formatted = formatInboundMessage(envelope);
+
+    expect(formatted).toContain("PRIVACY");
+    expect(formatted).toContain("personally identifiable information");
+    expect(formatted).toContain("Politely decline");
+  });
+});
+
+describe("Consolidated summary prompts", () => {
+  it("formats silence summary with log contents", () => {
+    const prompt = formatConsolidatedSummaryPrompt(
+      "agent-arya", "Rupul", 4, "## Full log here\nExchange 1...", "silence",
+    );
+    expect(prompt).toContain("completed (4 exchanges)");
+    expect(prompt).toContain("Full log here");
+    expect(prompt).toContain("Summarize the key findings");
+    expect(prompt).not.toContain("hasn't responded");
+  });
+
+  it("formats exchange limit summary", () => {
+    const prompt = formatConsolidatedSummaryPrompt(
+      "agent-arya", "Rupul", 20, "log contents", "exchange_limit",
+    );
+    expect(prompt).toContain("paused after 20 exchanges");
+    expect(prompt).toContain("didn't reach a conclusion");
+  });
+
+  it("formats no-response escalation", () => {
+    const prompt = formatConsolidatedSummaryPrompt(
+      "agent-arya", "Rupul", 0, null, "no_response",
+    );
+    expect(prompt).toContain("hasn't responded after 60 seconds");
+    expect(prompt).toContain("Offer alternatives");
+    expect(prompt).not.toContain("Full conversation");
+  });
+
+  it("formats no-response with partial conversation", () => {
+    const prompt = formatConsolidatedSummaryPrompt(
+      "agent-arya", "Rupul", 2, "some exchanges", "no_response",
+    );
+    expect(prompt).toContain("Conversation so far");
+    expect(prompt).toContain("some exchanges");
+  });
+});
+
+describe("Status prompts", () => {
+  it("formats first status update", () => {
+    const prompt = formatStatusPrompt("agent-arya", "Rupul", 1);
+    expect(prompt).toContain("still in progress");
+    expect(prompt).toContain("brief, specific status update");
+    expect(prompt).not.toContain("taking longer");
+  });
+
+  it("formats second status update", () => {
+    const prompt = formatStatusPrompt("agent-arya", "Rupul", 2);
+    expect(prompt).toContain("taking longer than usual");
+    expect(prompt).toContain("different wording");
+  });
+
+  it("uses agentId when no contact name", () => {
+    const prompt = formatStatusPrompt("agent-arya", undefined, 1);
+    expect(prompt).toContain("agent-arya");
   });
 });
 

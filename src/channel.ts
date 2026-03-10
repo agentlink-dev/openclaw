@@ -3,6 +3,7 @@ import { createEnvelope, TOPICS } from "./types.js";
 import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
 import type { A2ASessionManager } from "./a2a-session.js";
+import type { A2ALogWriter } from "./a2a-log.js";
 
 // ---------------------------------------------------------------------------
 // OC Channel Runtime API types (subset used by AgentLink inbound dispatch)
@@ -53,6 +54,12 @@ export interface DispatchOptions {
   a2aManager?: A2ASessionManager;
   /** Contact store for looking up human names. */
   contacts?: ContactsStore;
+  /** Log writer for A2A conversation logs. */
+  logWriter?: A2ALogWriter;
+  /** Called after an outbound auto-response is published via MQTT. */
+  onOutboundSent?: () => void;
+  /** Called when the agent signals [CONVERSATION_COMPLETE]. */
+  onConversationComplete?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +153,25 @@ export async function dispatchToSession(
           // Guard: only publish once (deliver may fire "final" multiple times)
           if (info.kind === "final" && !published && options?.mqttClient && accumulated.trim()) {
             published = true;
-            const responseText = accumulated.trim();
+            let responseText = accumulated.trim();
+
+            // Check for [CONVERSATION_COMPLETE] marker — agent signals it's done
+            const completeMarker = "[CONVERSATION_COMPLETE]";
+            const isComplete = responseText.includes(completeMarker);
+            if (isComplete) {
+              // Strip the marker from the response text
+              responseText = responseText.replace(completeMarker, "").trim();
+            }
+
+            const contact = options.contacts?.findByAgentId(senderAgentId);
+
+            // Log the outbound
+            if (options.logWriter && responseText) {
+              options.logWriter.logOutbound(senderAgentId, contact?.entry.human_name ?? senderAgentId, responseText);
+            }
+
+            // Always publish the response to MQTT (the other side needs the answer).
+            // CONVERSATION_COMPLETE means: send this final answer, then pause on this side.
             const envelope = createEnvelope(
               "message",
               config.agentId,
@@ -159,9 +184,16 @@ export async function dispatchToSession(
 
             try {
               await options.mqttClient.publish(topic, JSON.stringify(envelope));
-              const contact = options.contacts?.findByAgentId(senderAgentId);
               const label = contact ? `${contact.name}'s agent (${senderAgentId})` : senderAgentId;
               logger.info(`[AgentLink] Auto-response sent to ${label}`);
+
+              if (isComplete) {
+                // Final answer published. Pause this side — don't auto-respond to further messages.
+                logger.info(`[AgentLink] Conversation with ${label} completed (agent signaled DONE)`);
+                options.onConversationComplete?.();
+              } else {
+                options.onOutboundSent?.();
+              }
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               logger.warn(`[AgentLink] Failed to send auto-response: ${msg}`);
@@ -185,11 +217,12 @@ export async function dispatchToSession(
 // ---------------------------------------------------------------------------
 
 /**
- * Relay an A2A response into the main agentlink session so the human sees it.
- * Uses a separate "relay" peer to avoid mixing with A2A per-contact sessions.
+ * Relay a prompt into the human's main session (SessionKey: "main").
+ * The relay text is pre-formatted by the caller (e.g., consolidated summary, status prompt).
+ * The main session LLM processes the prompt and responds to the human.
  */
 export async function relayToMainSession(
-  responseText: string,
+  relayText: string,
   senderAgentId: string,
   senderHumanName: string | undefined,
   config: AgentLinkConfig,
@@ -201,41 +234,30 @@ export async function relayToMainSession(
     ? `${senderHumanName}'s agent (${senderAgentId})`
     : senderAgentId;
 
-  const relayText = [
-    `[AgentLink] Response from ${senderLabel}:`,
-    responseText,
-    "",
-    "---",
-    "This is a response relayed from an agent-to-agent conversation.",
-    "Summarize and share the relevant parts with your human.",
-  ].join("\n");
-
   try {
-    // Route to the webchat session so the relay appears in the human's main chat.
-    // Falls back to agentlink channel if webchat routing fails.
-    let route;
+    // Resolve the webchat route to get the ACTUAL session key the user is viewing.
+    // Don't hardcode "main" — OC may assign a different key depending on dmScope config.
+    let agentId = config.agentId;
+    let sessionKey = "main"; // fallback
     try {
-      route = channelApi.routing.resolveAgentRoute({
+      const route = channelApi.routing.resolveAgentRoute({
         cfg: ocConfig,
         channel: "webchat",
         accountId: config.agentId,
       });
+      agentId = route.agentId;
+      if (route.sessionKey) sessionKey = route.sessionKey;
     } catch {
-      route = channelApi.routing.resolveAgentRoute({
-        cfg: ocConfig,
-        channel: "agentlink",
-        accountId: config.agentId,
-        peer: { kind: "relay", id: "notifications" },
-      });
+      // Use defaults
     }
 
-    // Use webchat provider/channel so OC keeps the session tagged as webchat.
-    // Without this, the session's lastChannel flips to "agentlink" after the first
-    // relay and subsequent agent responses can't be delivered to the webchat UI.
+    logger.info(`[AgentLink] Relay targeting session: ${sessionKey}`);
+
+    // Target the user's actual webchat session
     const ctx = channelApi.reply.finalizeInboundContext({
       Body: relayText,
       BodyForAgent: relayText,
-      SessionKey: route.sessionKey,
+      SessionKey: sessionKey,
       From: `agentlink:relay:${senderAgentId}`,
       To: config.agentId,
       Provider: "webchat",
@@ -252,23 +274,23 @@ export async function relayToMainSession(
     const cfgAny = ocConfig as Record<string, any>;
     const storePath = channelApi.session.resolveStorePath(
       cfgAny.session?.store ?? cfgAny.store,
-      { agentId: route.agentId },
+      { agentId },
     );
 
     await channelApi.session.recordInboundSession({
       storePath,
-      sessionKey: route.sessionKey,
+      sessionKey,
       ctx,
       onRecordError: (err) => logger.warn(`[AgentLink] recordInboundSession (relay) error: ${err}`),
     });
 
-    // Dispatch to relay session — agent processes and responds to human
+    // Dispatch — the main session LLM processes the relay and responds to the human
     await channelApi.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx,
       cfg: ocConfig,
       dispatcherOptions: {
         deliver: async () => {
-          // Relay session responses go to UI only — no MQTT outbound
+          // Relay responses go to the UI only — no MQTT outbound
         },
         onError: (err, info) => {
           logger.warn(`[AgentLink] relay dispatch ${info.kind} error: ${err}`);
@@ -277,7 +299,7 @@ export async function relayToMainSession(
       replyOptions: { disableBlockStreaming: true },
     });
 
-    logger.info(`[AgentLink] Relayed response from ${senderAgentId} to main session`);
+    logger.info(`[AgentLink] Relayed to main session (from ${senderAgentId})`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn(`[AgentLink] Failed to relay to main session: ${msg}`);
@@ -310,10 +332,21 @@ export function formatInboundMessage(
     "IMPORTANT: Do NOT use the agentlink_message tool to reply in this conversation.",
     "Just respond with text. The system handles delivery.",
     "",
+    "PRIVACY: If the other agent asks for personally identifiable information",
+    "(home address, phone number, email, financial details, health info),",
+    "do NOT share it. Politely decline: say your human prefers not to share that.",
+    "Continue the conversation with what you can share.",
+    "",
     "Use ALL your tools (calendar, skills, exec, etc.) to give accurate answers.",
     "If a tool call fails, read the relevant skill file with the read tool (NOT exec) and retry.",
     "When using exec, run simple commands without shell redirects (no 2>/dev/null, no pipes, no ||).",
     "Do NOT fall back to guessing or memory when tools are available — use them.",
+    "",
+    "CONVERSATION FLOW: When the question has been fully answered and there is nothing",
+    "more to discuss, end your response with [CONVERSATION_COMPLETE] on its own line.",
+    "Do NOT continue with pleasantries like 'let me know if you need anything' or 'take care'.",
+    "One clear answer, then [CONVERSATION_COMPLETE]. Do not use this marker if you are",
+    "asking a follow-up question or expecting more information.",
   ];
 
   if (a2aContext) {
@@ -326,7 +359,7 @@ export function formatInboundMessage(
 }
 
 /**
- * Format a "conversation paused" message for the main session relay.
+ * Format a "conversation paused" message (legacy, kept for tests).
  */
 export function formatPausedMessage(
   senderAgentId: string,
@@ -341,8 +374,103 @@ export function formatPausedMessage(
     `[AgentLink] Conversation with ${label} paused after ${exchangeCount} exchanges.`,
     "",
     "The agent-to-agent conversation has reached its exchange limit.",
-    "Check the AgentLink conversation in the sidebar for details.",
     "Tell me to continue the conversation if you'd like me to keep going.",
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Consolidated summary + status prompts (for relay to main session)
+// ---------------------------------------------------------------------------
+
+export type SummaryTrigger = "silence" | "exchange_limit" | "no_response";
+
+/**
+ * Build the relay prompt for a consolidated A2A summary.
+ * This text is injected into the main session so the LLM can synthesize
+ * and present the result to the human (UX Section 1, Message 3).
+ */
+export function formatConsolidatedSummaryPrompt(
+  contactAgentId: string,
+  contactName: string | undefined,
+  exchangeCount: number,
+  logContents: string | null,
+  trigger: SummaryTrigger,
+): string {
+  const label = contactName
+    ? `${contactName}'s agent (${contactAgentId})`
+    : contactAgentId;
+  const displayName = contactName ?? "the other agent";
+
+  if (trigger === "no_response") {
+    const lines = [
+      `[AgentLink] ${label} hasn't responded after 60 seconds — they may be offline.`,
+    ];
+    if (logContents && exchangeCount > 0) {
+      lines.push("", "## Conversation so far:", logContents);
+    }
+    lines.push(
+      "",
+      "---",
+      `Tell your human that ${displayName}'s agent isn't responding.`,
+      "Offer alternatives: try again later, or reach out to them directly.",
+      "Do NOT mention AgentLink, MQTT, agent IDs, or technical details.",
+    );
+    return lines.join("\n");
+  }
+
+  const header = trigger === "exchange_limit"
+    ? `[AgentLink] Conversation with ${label} paused after ${exchangeCount} exchanges.`
+    : `[AgentLink] Conversation with ${label} completed (${exchangeCount} exchanges).`;
+
+  const lines = [header];
+  if (logContents) {
+    lines.push("", "## Full conversation:", logContents);
+  }
+  lines.push(
+    "",
+    "---",
+    "Summarize the key findings for your human. Lead with the result, not the process.",
+    "If there's a next action (booking, confirming, deciding), ask your human.",
+    "Do NOT narrate the exchanges — synthesize the result.",
+    "Do NOT mention AgentLink, MQTT, agent IDs, exchange counts, or technical details.",
+  );
+
+  if (trigger === "exchange_limit") {
+    lines.push(
+      "If the conversation didn't reach a conclusion, tell your human where things stand and ask what they want to do.",
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Build a status update prompt for relay to the main session.
+ * Injected at 15s and 45s after the human initiates an A2A conversation.
+ */
+export function formatStatusPrompt(
+  contactAgentId: string,
+  contactName: string | undefined,
+  statusNumber: 1 | 2,
+): string {
+  const displayName = contactName ?? contactAgentId;
+
+  if (statusNumber === 1) {
+    return [
+      `[AgentLink] Your conversation with ${displayName}'s agent is still in progress.`,
+      "",
+      "Give your human a brief, specific status update about what's happening. One sentence.",
+      "Do NOT repeat the original message. Be specific about what the other agent is doing.",
+      "Do NOT mention AgentLink, agent IDs, exchange counts, or technical details.",
+    ].join("\n");
+  }
+
+  return [
+    `[AgentLink] Your conversation with ${displayName}'s agent is taking longer than usual.`,
+    "",
+    "Give your human a second status update with different wording from the first.",
+    "Be specific. One sentence. Optionally offer an alternative approach.",
+    "Do NOT mention AgentLink, agent IDs, exchange counts, or technical details.",
   ].join("\n");
 }
 

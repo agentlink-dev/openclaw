@@ -3,6 +3,7 @@ import { createEnvelope, createInvitePayload, TOPICS } from "./types.js";
 import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
 import type { A2ASessionManager } from "./a2a-session.js";
+import type { A2ALogWriter } from "./a2a-log.js";
 import { resolveInviteCode } from "./invite.js";
 
 // ---------------------------------------------------------------------------
@@ -35,12 +36,19 @@ export function createMessageTool(
   contacts: ContactsStore,
   logger: Logger,
   a2aManager?: A2ASessionManager,
+  onA2AStarted?: (agentId: string) => void,
 ): ToolDefinition {
   // Build dynamic description with current contacts
   const all = contacts.getAll();
   const contactEntries = Object.entries(all);
   let description =
-    "Send a message to another agent via AgentLink. Use the contact's name or their agent ID. The message will be delivered to their agent, who will respond automatically.";
+    "Send a message to another agent via AgentLink. Use the contact's name or their agent ID. " +
+    "The message will be delivered to their agent, who will respond automatically. " +
+    "The conversation may continue for several exchanges autonomously.\n\n" +
+    "IMPORTANT: When you use this tool, briefly tell your human what you're doing and what " +
+    "you'll come back with BEFORE calling the tool. Example: \"Reaching out to Sarah's agent " +
+    "to check her availability. I'll come back with times that work for both of you.\"\n\n" +
+    "Do NOT mention tool names, agent IDs, MQTT, or AgentLink internals to the human.";
   if (contactEntries.length > 0) {
     const contactList = contactEntries
       .map(([name, entry]) => {
@@ -103,13 +111,19 @@ export function createMessageTool(
         const label = contact ? `${contact.name}'s agent (${agentId})` : agentId;
         logger.info(`[AgentLink] Message sent to ${label}`);
 
-        // Set pending relay — when the response comes back, it'll be relayed to main session
+        // Stash origin context (which session the human is on) for relay
         if (a2aManager) {
-          a2aManager.setPendingRelay(agentId);
+          a2aManager.setOriginContext(agentId, {
+            sessionKey: "main",
+            channel: "webchat",
+            agentId: config.agentId,
+            timestamp: Date.now(),
+          });
         }
+        onA2AStarted?.(agentId);
 
         return text(
-          `Message sent to ${label}. Their response will appear in the AgentLink conversation and be relayed back here.`
+          `Message sent to ${label}. The conversation will run autonomously — I'll relay the results when it's done.`
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -217,9 +231,10 @@ export function createInviteTool(
         logger.info(`[AgentLink] Invite code generated: ${invite.code}`);
 
         const shareMessage = [
-          `Hey! I'm using AgentLink so our AI agents can coordinate.`,
-          `Tell your agent: "Join AgentLink with code ${invite.code}"`,
-          `Or install: npx @agentlinkdev/agentlink setup --join ${invite.code}`,
+          `Hey! I set up my AI agent to coordinate with yours — schedules, dinner plans, the works.`,
+          `Get started in 30 seconds: agent.lk/j/${invite.code}`,
+          ``,
+          `(Developer? npx @agentlinkdev/agentlink setup --join ${invite.code})`,
         ].join("\n");
 
         const lines = [
@@ -278,6 +293,56 @@ export function createJoinTool(
         logger.error(`[AgentLink] Failed to join via invite: ${msg}`);
         return text(`Failed to join: ${msg}`);
       }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tool: agentlink_logs
+// ---------------------------------------------------------------------------
+
+export function createLogsTool(
+  config: AgentLinkConfig,
+  contacts: ContactsStore,
+  logWriter: A2ALogWriter,
+): ToolDefinition {
+  return {
+    name: "agentlink_logs",
+    label: "Read A2A conversation logs",
+    description:
+      "Read your agent-to-agent conversation logs with other contacts. " +
+      "Use this when your human asks about what you discussed with another agent. " +
+      "Provide the contact name or agent ID to read the conversation history.",
+    parameters: {
+      type: "object",
+      properties: {
+        contact: {
+          type: "string",
+          description: "Contact name or agent ID (e.g., 'rupul' or 'agent-arya')",
+        },
+      },
+      required: ["contact"],
+    },
+    async execute(_id, params) {
+      const contactInput = (params.contact as string)?.trim();
+      if (!contactInput) return text("Error: 'contact' parameter is required.");
+
+      // Resolve contact name/ID → agent ID
+      const agentId = contacts.resolve(contactInput);
+      if (!agentId) {
+        return text(`Contact "${contactInput}" not found. Use agentlink_whois to list your contacts.`);
+      }
+
+      // Read log file
+      const log = logWriter.readLog(agentId);
+      if (!log) {
+        return text(`No conversation history found with ${contactInput}.`);
+      }
+
+      return text(
+        `# Conversation history with ${contactInput}\n\n${log}\n\n` +
+        `This is your full A2A conversation log. Summarize it for your human if they ask what you discussed.`,
+      );
     },
   };
 }

@@ -26,14 +26,22 @@ export interface A2ASessionManager {
   /** Reset exchange count (e.g., when human says "continue"). */
   reset(contactAgentId: string): void;
 
-  /** Mark that we're expecting a response from this agent (for relay). */
-  setPendingRelay(contactAgentId: string): void;
+  /** Record that the human initiated an A2A via tool, with originating session context. */
+  setOriginContext(contactAgentId: string, ctx: OriginContext): void;
 
-  /** Check and consume a pending relay. Returns true if there was one. */
-  consumePendingRelay(contactAgentId: string): boolean;
+  /** Get the originating session context for relay back to human. */
+  getOriginContext(contactAgentId: string): OriginContext | undefined;
 
-  /** Check if there's a pending relay without consuming it. */
-  hasPendingRelay(contactAgentId: string): boolean;
+  /** Record timestamp of last exchange for silence timeout. */
+  getLastExchangeTime(contactAgentId: string): number;
+}
+
+/** Context from the session where the human initiated the A2A conversation. */
+export interface OriginContext {
+  sessionKey: string;
+  channel: string;
+  agentId: string;
+  timestamp: number;
 }
 
 export function createA2ASessionManager(
@@ -41,12 +49,14 @@ export function createA2ASessionManager(
   maxExchanges: number = DEFAULT_MAX_EXCHANGES,
 ): A2ASessionManager {
   const exchangeCounts = new Map<string, number>();
-  const pendingRelays = new Set<string>();
+  const lastExchangeTimes = new Map<string, number>();
+  const originContexts = new Map<string, OriginContext>();
 
   return {
     recordExchange(contactAgentId) {
       const count = (exchangeCounts.get(contactAgentId) ?? 0) + 1;
       exchangeCounts.set(contactAgentId, count);
+      lastExchangeTimes.set(contactAgentId, Date.now());
       if (count >= maxExchanges) {
         logger.info(
           `[AgentLink] A2A exchange limit reached for ${contactAgentId} (${count}/${maxExchanges})`,
@@ -65,7 +75,6 @@ export function createA2ASessionManager(
 
     pause(contactAgentId) {
       exchangeCounts.set(contactAgentId, maxExchanges);
-      logger.info(`[AgentLink] A2A conversation with ${contactAgentId} paused (relay fired)`);
     },
 
     reset(contactAgentId) {
@@ -73,20 +82,16 @@ export function createA2ASessionManager(
       logger.info(`[AgentLink] A2A exchange counter reset for ${contactAgentId}`);
     },
 
-    setPendingRelay(contactAgentId) {
-      pendingRelays.add(contactAgentId);
+    setOriginContext(contactAgentId, ctx) {
+      originContexts.set(contactAgentId, ctx);
     },
 
-    consumePendingRelay(contactAgentId) {
-      if (pendingRelays.has(contactAgentId)) {
-        pendingRelays.delete(contactAgentId);
-        return true;
-      }
-      return false;
+    getOriginContext(contactAgentId) {
+      return originContexts.get(contactAgentId);
     },
 
-    hasPendingRelay(contactAgentId) {
-      return pendingRelays.has(contactAgentId);
+    getLastExchangeTime(contactAgentId) {
+      return lastExchangeTimes.get(contactAgentId) ?? 0;
     },
   };
 }

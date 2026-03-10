@@ -53,36 +53,50 @@ describe("A2A Session Manager", () => {
     });
   });
 
-  describe("pending relays", () => {
-    it("no pending relay by default", () => {
+  describe("origin context", () => {
+    it("no origin context by default", () => {
       const mgr = createA2ASessionManager(noopLogger);
-      expect(mgr.hasPendingRelay("agent-x")).toBe(false);
-      expect(mgr.consumePendingRelay("agent-x")).toBe(false);
+      expect(mgr.getOriginContext("agent-x")).toBeUndefined();
     });
 
-    it("set and consume pending relay", () => {
+    it("set and get origin context", () => {
       const mgr = createA2ASessionManager(noopLogger);
-      mgr.setPendingRelay("agent-x");
-      expect(mgr.hasPendingRelay("agent-x")).toBe(true);
-      expect(mgr.consumePendingRelay("agent-x")).toBe(true);
-      // Consumed — should be gone
-      expect(mgr.hasPendingRelay("agent-x")).toBe(false);
-      expect(mgr.consumePendingRelay("agent-x")).toBe(false);
+      const ctx = { sessionKey: "main", channel: "webchat", agentId: "agent-x", timestamp: Date.now() };
+      mgr.setOriginContext("agent-x", ctx);
+      expect(mgr.getOriginContext("agent-x")).toEqual(ctx);
     });
 
-    it("pending relay is per-contact", () => {
+    it("origin context is per-contact", () => {
       const mgr = createA2ASessionManager(noopLogger);
-      mgr.setPendingRelay("agent-x");
-      expect(mgr.hasPendingRelay("agent-x")).toBe(true);
-      expect(mgr.hasPendingRelay("agent-y")).toBe(false);
+      const ctx = { sessionKey: "main", channel: "webchat", agentId: "agent-x", timestamp: 1000 };
+      mgr.setOriginContext("agent-x", ctx);
+      expect(mgr.getOriginContext("agent-x")).toEqual(ctx);
+      expect(mgr.getOriginContext("agent-y")).toBeUndefined();
+    });
+  });
+
+  describe("last exchange time", () => {
+    it("returns 0 when no exchanges recorded", () => {
+      const mgr = createA2ASessionManager(noopLogger);
+      expect(mgr.getLastExchangeTime("agent-x")).toBe(0);
     });
 
-    it("multiple setPendingRelay calls are idempotent", () => {
+    it("updates on recordExchange", () => {
       const mgr = createA2ASessionManager(noopLogger);
-      mgr.setPendingRelay("agent-x");
-      mgr.setPendingRelay("agent-x");
-      expect(mgr.consumePendingRelay("agent-x")).toBe(true);
-      expect(mgr.consumePendingRelay("agent-x")).toBe(false);
+      const before = Date.now();
+      mgr.recordExchange("agent-x");
+      const after = Date.now();
+      const lastTime = mgr.getLastExchangeTime("agent-x");
+      expect(lastTime).toBeGreaterThanOrEqual(before);
+      expect(lastTime).toBeLessThanOrEqual(after);
+    });
+
+    it("tracks per-contact independently", () => {
+      const mgr = createA2ASessionManager(noopLogger);
+      mgr.recordExchange("agent-x");
+      const timeX = mgr.getLastExchangeTime("agent-x");
+      expect(timeX).toBeGreaterThan(0);
+      expect(mgr.getLastExchangeTime("agent-y")).toBe(0);
     });
   });
 });
