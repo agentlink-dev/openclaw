@@ -322,13 +322,35 @@ export function formatInboundMessage(
     ? `${envelope.from_name} (${envelope.from})`
     : envelope.from;
 
-  const lines = [
+  // Build prompt with context-aware framing
+  const lines: string[] = [
     `[AgentLink] Message from ${contactLabel}:`,
     envelope.text ?? "(no message body)",
     "",
     "---",
+  ];
+
+  // Context-aware framing (based on message context)
+  if (envelope.context === "tell") {
+    lines.push(
+      `This is an UPDATE or STATEMENT from ${contactLabel}.`,
+      "No response is required unless you have questions or need clarification.",
+      "",
+    );
+  } else {
+    // Default: "ask" or undefined (treat as question)
+    lines.push(
+      `This is a QUESTION directed at you about your human.`,
+      "Answer using your tools and knowledge (calendar, files, skills, etc.).",
+      "Do NOT reach out to other agents or try to coordinate.",
+      "When you've fully answered, end with [CONVERSATION_COMPLETE].",
+      "",
+    );
+  }
+
+  lines.push(
     `You are in an AgentLink conversation with ${contactLabel}.`,
-    "Respond naturally — your text response will be captured and sent back automatically.",
+    "Your text response will be captured and sent back automatically.",
     "IMPORTANT: Do NOT use the agentlink_message tool to reply in this conversation.",
     "Just respond with text. The system handles delivery.",
     "",
@@ -347,7 +369,7 @@ export function formatInboundMessage(
     "Do NOT continue with pleasantries like 'let me know if you need anything' or 'take care'.",
     "One clear answer, then [CONVERSATION_COMPLETE]. Do not use this marker if you are",
     "asking a follow-up question or expecting more information.",
-  ];
+  );
 
   if (a2aContext) {
     lines.push(

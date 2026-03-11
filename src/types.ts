@@ -60,6 +60,22 @@ export type MessageType = "message" | "contact_exchange";
 
 export type MessageOrigin = "tool" | "auto";
 
+/**
+ * Message context: semantic hint about the message's purpose
+ * - "ask": Question expecting an answer
+ * - "tell": Statement/update, no response needed
+ */
+export type MessageContext = "ask" | "tell";
+
+export const MESSAGE_CONTEXTS = {
+  ASK: "ask",
+  TELL: "tell",
+} as const;
+
+export function isValidContext(ctx: string): ctx is MessageContext {
+  return ctx === "ask" || ctx === "tell";
+}
+
 export interface MessageEnvelope {
   version: 1;
   type: MessageType;
@@ -68,6 +84,7 @@ export interface MessageEnvelope {
   to: string;
   text?: string;
   origin?: MessageOrigin;
+  context?: MessageContext;  // Optional: defaults to "ask"
   ts: string;
   message_id: string;
 }
@@ -79,6 +96,7 @@ export function createEnvelope(
   to: string,
   text?: string,
   origin?: MessageOrigin,
+  context?: MessageContext,
 ): MessageEnvelope {
   return {
     version: 1,
@@ -88,6 +106,7 @@ export function createEnvelope(
     to,
     text,
     origin,
+    context,
     ts: new Date().toISOString(),
     message_id: uuid(),
   };

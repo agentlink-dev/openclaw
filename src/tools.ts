@@ -75,11 +75,18 @@ export function createMessageTool(
           type: "string",
           description: "The message text to send",
         },
+        context: {
+          type: "string",
+          enum: ["ask", "tell"],
+          description: "Optional message context. Use 'tell' for one-way updates/confirmations (no response expected). " +
+                       "Use 'ask' (or omit) when you need a response. Defaults to 'ask' if not specified.",
+        },
       },
     },
     async execute(_id, params) {
       const to = params.to as string;
       const messageText = params.text as string;
+      const context = params.context as "ask" | "tell" | undefined;
 
       if (!to || !messageText) {
         return text("Error: both 'to' and 'text' are required.");
@@ -102,7 +109,7 @@ export function createMessageTool(
       }
 
       // Build and send envelope — origin: "tool" tells receiver this is human-initiated
-      const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool");
+      const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool", context);
       const topic = TOPICS.inbox(agentId, config.agentId);
 
       try {

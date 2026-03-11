@@ -116,7 +116,7 @@ describe("Full message flow (simulated)", () => {
       expect(formatted).toContain("Rupul");
       expect(formatted).toContain(ARYA_ID);
       expect(formatted).toContain("Is Cathy free Saturday?");
-      expect(formatted).toContain("your text response will be captured and sent back automatically");
+      expect(formatted).toContain("Your text response will be captured and sent back automatically");
     } finally {
       await disconnect(clientA);
       await disconnect(clientB);

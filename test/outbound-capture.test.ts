@@ -15,8 +15,8 @@ describe("Outbound capture formatting", () => {
 
     expect(formatted).toContain("[AgentLink] Message from Rupul (agent-arya):");
     expect(formatted).toContain("What meetings does Rupul have?");
-    expect(formatted).toContain("your text response will be captured and sent back automatically");
-    expect(formatted).toContain("Respond naturally");
+    expect(formatted).toContain("Your text response will be captured and sent back automatically");
+    expect(formatted).toContain("This is a QUESTION directed at you about your human");
     expect(formatted).toContain("Do NOT use the agentlink_message tool");
     // Should NOT contain the old anti-loop instruction
     expect(formatted).not.toContain("do not send follow-up");
