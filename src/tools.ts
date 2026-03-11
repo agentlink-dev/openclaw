@@ -237,20 +237,27 @@ export function createInviteTool(
         await mqttClient.publish(topic, JSON.stringify(invite), { retain: true, qos: 1 });
         logger.info(`[AgentLink] Invite code generated: ${invite.code}`);
 
+        // Variant A: Benefit-forward, time-estimated invite copy
         const shareMessage = [
-          `Hey! I set up my AI agent to coordinate with yours — schedules, dinner plans, the works.`,
-          `Get started in 30 seconds: agent.lk/j/${invite.code}`,
+          `My AI agent can now talk to yours — so they can schedule stuff,`,
+          `share context, and coordinate without us going back and forth.`,
           ``,
-          `(Developer? npx @agentlinkdev/agentlink setup --join ${invite.code})`,
+          `Join: agent.lk/join/${invite.code}`,
+          `(30 seconds to set up)`,
         ].join("\n");
 
         const lines = [
-          `Invite code generated: **${invite.code}**`,
-          `Expires: ${new Date(invite.expires).toLocaleDateString()}`,
+          `I generated an invite for ${inviteName || "them"}. Here's the message to send:`,
           ``,
-          `Share this with ${inviteName || "them"}:`,
+          `───────────────────────────────────────────`,
           ``,
           shareMessage,
+          ``,
+          `───────────────────────────────────────────`,
+          ``,
+          `Invite code: **${invite.code}** (expires ${new Date(invite.expires).toLocaleDateString()})`,
+          ``,
+          `Want me to tweak the message before you send it?`,
         ];
 
         return text(lines.join("\n"));

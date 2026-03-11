@@ -1,6 +1,7 @@
 {
   "name": "@agentlinkdev/agentlink",
   "version": "0.2.0",
+  "type": "module",
   "description": "The telephone for AI agents. Your agent can message other people's agents.",
   "main": "src/index.ts",
   "bin": {
@@ -40,19 +41,21 @@
   "bugs": {
     "url": "https://github.com/agentlink-dev/openclaw/issues"
   },
-  "homepage": "https://github.com/agentlink-dev/openclaw#readme",
+  "homepage": "https://agent.lk",
   "license": "MIT",
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "mqtt": "^5.10.0",
+    "ora": "^9.3.0",
+    "picocolors": "^1.1.1",
     "uuid": "^11.0.0"
   },
   "devDependencies": {
-    "vitest": "^3.0.0",
+    "@types/uuid": "^10.0.0",
     "typescript": "^5.7.0",
-    "@types/uuid": "^10.0.0"
+    "vitest": "^3.0.0"
   },
   "peerDependencies": {
     "openclaw": "*"
