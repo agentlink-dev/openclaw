@@ -169,7 +169,7 @@ function detectIdentity() {
   };
 }
 
-async function setup(joinCode) {
+async function setup(joinCode, humanNameArg, agentNameArg) {
   console.log("\n" + pc.bold("  AgentLink Setup") + "\n");
 
   // Step 1: Check for OpenClaw
@@ -195,34 +195,60 @@ async function setup(joinCode) {
     console.log(pc.green(`  ✓ Existing identity: ${detected.agent_id} (${detected.agent_name} for ${detected.human_name})`));
     identity = detected;
   } else {
-    // Ask for human name
     let humanName;
-    if (detected.humanName) {
-      console.log(pc.dim(`\n  Detected from ${detected.humanNameSource}: ${pc.bold(detected.humanName)}`));
-      const answer = await ask(`  Your name (press Enter to confirm, or type to change): `);
-      humanName = answer || detected.humanName;
-    } else {
-      humanName = await ask("\n  What's your name? ");
-    }
-
-    if (!humanName) {
-      console.error(pc.red("  Your name is required.\n"));
-      process.exit(1);
-    }
-
-    // Ask for agent name
     let agentName;
-    if (detected.agentName) {
-      console.log(pc.dim(`\n  Detected from ${detected.agentNameSource}: ${pc.bold(detected.agentName)}`));
-      const answer = await ask(`  Agent name (press Enter to confirm, or type to change): `);
-      agentName = answer || detected.agentName;
-    } else {
-      agentName = await ask("\n  What should your agent be called? ");
-    }
 
-    if (!agentName) {
-      console.error(pc.red("  Agent name is required.\n"));
-      process.exit(1);
+    // Check if CLI arguments were provided (non-interactive mode)
+    const isNonInteractive = humanNameArg || agentNameArg || joinCode;
+
+    if (isNonInteractive) {
+      // Use CLI args, then detected values, then defaults
+      humanName = humanNameArg || detected.humanName || os.userInfo().username || "User";
+      agentName = agentNameArg || detected.agentName || "Agent";
+
+      console.log(pc.dim(`  Auto-configuring...`));
+      if (humanNameArg) {
+        console.log(pc.dim(`  Human name: ${humanName} (from --human-name)`));
+      } else if (detected.humanName) {
+        console.log(pc.dim(`  Human name: ${humanName} (from ${detected.humanNameSource})`));
+      } else {
+        console.log(pc.dim(`  Human name: ${humanName} (using system username)`));
+      }
+
+      if (agentNameArg) {
+        console.log(pc.dim(`  Agent name: ${agentName} (from --agent-name)`));
+      } else if (detected.agentName) {
+        console.log(pc.dim(`  Agent name: ${agentName} (from ${detected.agentNameSource})`));
+      } else {
+        console.log(pc.dim(`  Agent name: ${agentName} (using default)`));
+      }
+    } else {
+      // Interactive mode - ask for confirmation/input
+      if (detected.humanName) {
+        console.log(pc.dim(`\n  Detected from ${detected.humanNameSource}: ${pc.bold(detected.humanName)}`));
+        const answer = await ask(`  Your name (press Enter to confirm, or type to change): `);
+        humanName = answer || detected.humanName;
+      } else {
+        humanName = await ask("\n  What's your name? ");
+      }
+
+      if (!humanName) {
+        console.error(pc.red("  Your name is required.\n"));
+        process.exit(1);
+      }
+
+      if (detected.agentName) {
+        console.log(pc.dim(`\n  Detected from ${detected.agentNameSource}: ${pc.bold(detected.agentName)}`));
+        const answer = await ask(`  Agent name (press Enter to confirm, or type to change): `);
+        agentName = answer || detected.agentName;
+      } else {
+        agentName = await ask("\n  What should your agent be called? ");
+      }
+
+      if (!agentName) {
+        console.error(pc.red("  Agent name is required.\n"));
+        process.exit(1);
+      }
     }
 
     const agentId = `${slugify(agentName)}-${generateSuffix()}`;
@@ -357,13 +383,24 @@ const command = args[0];
 if (command === "setup") {
   const joinIdx = args.indexOf("--join");
   const joinCode = joinIdx >= 0 ? args[joinIdx + 1] : undefined;
-  setup(joinCode);
+
+  const humanNameIdx = args.indexOf("--human-name");
+  const humanNameArg = humanNameIdx >= 0 ? args[humanNameIdx + 1] : undefined;
+
+  const agentNameIdx = args.indexOf("--agent-name");
+  const agentNameArg = agentNameIdx >= 0 ? args[agentNameIdx + 1] : undefined;
+
+  setup(joinCode, humanNameArg, agentNameArg);
 } else if (command === "uninstall") {
   uninstall();
 } else {
   console.log("\n" + pc.bold("  AgentLink CLI") + "\n");
   console.log("  Usage:");
-  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink setup") + "              Install + generate identity");
-  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink setup --join CODE") + "  Install + join via invite");
-  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink uninstall") + "          Remove plugin\n");
+  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink setup") + "                              Install + generate identity");
+  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink setup --join CODE") + "                Install + join via invite");
+  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink setup --human-name NAME") + "          Specify human name");
+  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink setup --agent-name NAME") + "          Specify agent name");
+  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink uninstall") + "                        Remove plugin\n");
+  console.log("  Options can be combined:");
+  console.log("    " + pc.cyan("npx @agentlinkdev/agentlink setup --join CODE --human-name \"Rupul\" --agent-name \"Arya\"") + "\n");
 }
