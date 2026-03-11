@@ -240,8 +240,9 @@ export function createInviteTool(
         logger.info(`[AgentLink] Invite code generated: ${invite.code}`);
 
         // Construct landing page URL (configurable, defaults to Vercel deployment)
+        // Use .txt extension for reliable plain text delivery to LLMs
         const landingPageBase = config.landingPageUrl || "https://website-agentlink.vercel.app";
-        const inviteUrl = `${landingPageBase}/join/${invite.code}`;
+        const inviteUrl = `${landingPageBase}/join/${invite.code}.txt`;
 
         // Variant A: Benefit-forward, time-estimated invite copy with landing page URL
         const shareMessage = [
