@@ -305,6 +305,25 @@ function register(api: PluginApi) {
       });
 
       api.logger.info("[AgentLink] Service started. Listening for messages.");
+
+      // Process pending invite code (if CLI saved one)
+      const fs = await import("node:fs/promises");
+      const pendingJoinPath = path.join(config.dataDir, "pending_join.json");
+      try {
+        const pendingData = await fs.readFile(pendingJoinPath, "utf-8");
+        const { code } = JSON.parse(pendingData);
+        if (code) {
+          api.logger.info(`[AgentLink] Processing pending invite code: ${code}`);
+          const result = await resolveInviteCode(code, config, mqttClient, contacts, api.logger);
+          api.logger.info(`[AgentLink] ${result.message}`);
+          await fs.unlink(pendingJoinPath);
+        }
+      } catch (err) {
+        // No pending join file or failed to process - not an error
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          api.logger.warn(`[AgentLink] Failed to process pending join: ${err}`);
+        }
+      }
     },
     async stop() {
       await mqttService.stop();

@@ -6,6 +6,7 @@ import { generateAgentId } from "./types.js";
 export interface Identity {
   agent_id: string;
   human_name: string;
+  agent_name?: string; // Optional: agent's name (e.g., "Arya")
 }
 
 const DEFAULT_DATA_DIR = path.join(os.homedir(), ".agentlink");
@@ -19,7 +20,11 @@ export function loadIdentity(dataDir: string = DEFAULT_DATA_DIR): Identity | nul
     const raw = fs.readFileSync(filePath, "utf-8");
     const data = JSON.parse(raw);
     if (data.agent_id && data.human_name) {
-      return { agent_id: data.agent_id, human_name: data.human_name };
+      return {
+        agent_id: data.agent_id,
+        human_name: data.human_name,
+        agent_name: data.agent_name, // Optional field
+      };
     }
     return null;
   } catch {
@@ -57,13 +62,17 @@ export function ensureIdentity(humanName: string, dataDir: string = DEFAULT_DATA
  * Priority: explicit config > identity.json > auto-generate.
  */
 export function resolveIdentity(
-  config: { agentId?: string; humanName?: string; dataDir?: string },
+  config: { agentId?: string; humanName?: string; agentName?: string; dataDir?: string },
 ): Identity {
   const dataDir = config.dataDir ?? DEFAULT_DATA_DIR;
 
-  // If both are explicitly provided in config, use them
+  // If both agentId and humanName are explicitly provided in config, use them
   if (config.agentId && config.humanName) {
-    return { agent_id: config.agentId, human_name: config.humanName };
+    return {
+      agent_id: config.agentId,
+      human_name: config.humanName,
+      agent_name: config.agentName,
+    };
   }
 
   // Try loading from disk
@@ -74,6 +83,7 @@ export function resolveIdentity(
     return {
       agent_id: config.agentId ?? existing.agent_id,
       human_name: config.humanName ?? existing.human_name,
+      agent_name: config.agentName ?? existing.agent_name,
     };
   }
 

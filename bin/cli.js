@@ -60,47 +60,113 @@ function detectIdentity() {
   if (fs.existsSync(IDENTITY_FILE)) {
     try {
       const identity = JSON.parse(fs.readFileSync(IDENTITY_FILE, "utf-8"));
-      if (identity.agent_id && identity.human_name) {
+      if (identity.agent_id && identity.human_name && identity.agent_name) {
         return { existing: true, ...identity };
       }
     } catch {}
   }
 
   // 2. Check OpenClaw plugin config
+  let humanName = null;
+  let agentName = null;
+
   if (fs.existsSync(OC_CONFIG_PATH)) {
     try {
       const config = JSON.parse(fs.readFileSync(OC_CONFIG_PATH, "utf-8"));
       const agentConfig = config?.plugins?.entries?.agentlink?.config?.agent;
       if (agentConfig?.human_name) {
-        return { detectedFrom: "openclaw.json", name: agentConfig.human_name };
+        humanName = agentConfig.human_name;
       }
     } catch {}
   }
 
-  // 3. Try USER.md (skip if template)
+  // 3. Try USER.md for human name (skip if template)
   const userMdPath = path.join(os.homedir(), ".openclaw", "workspace", "USER.md");
-  if (fs.existsSync(userMdPath)) {
+  if (!humanName && fs.existsSync(userMdPath)) {
     try {
       const content = fs.readFileSync(userMdPath, "utf-8");
-      // Look for "- **Name:** VALUE" pattern
       const nameMatch = content.match(/^-\s*\*\*Name:\*\*\s+(.+)$/m);
       if (nameMatch && nameMatch[1].trim()) {
         const name = nameMatch[1].trim();
-        // Skip if it's empty, has underscores (template marker), or is a label
         if (name.length > 0 && !name.includes("_") && !name.includes("**") && !name.includes(":")) {
-          return { detectedFrom: "USER.md", name };
+          humanName = name;
         }
       }
     } catch {}
   }
 
-  // 4. Fall back to system username
-  const username = os.userInfo().username;
-  if (username && username !== "root") {
-    return { detectedFrom: "system", name: username };
+  // 4. Try IDENTITY.md for agent name
+  const identityMdPath = path.join(os.homedir(), ".openclaw", "workspace", "IDENTITY.md");
+  if (fs.existsSync(identityMdPath)) {
+    try {
+      const content = fs.readFileSync(identityMdPath, "utf-8");
+      const nameMatch = content.match(/^-\s*\*\*Name:\*\*\s+(.+)$/m);
+      if (nameMatch && nameMatch[1].trim()) {
+        const name = nameMatch[1].trim();
+        if (name.length > 0 && !name.includes("_") && !name.includes("**") && !name.includes(":")) {
+          agentName = name;
+        }
+      }
+    } catch {}
   }
 
-  return null;
+  // 5. Try MEMORY.md as fallback for both names
+  const memoryMdPath = path.join(os.homedir(), ".openclaw", "workspace", "MEMORY.md");
+  if ((!humanName || !agentName) && fs.existsSync(memoryMdPath)) {
+    try {
+      const content = fs.readFileSync(memoryMdPath, "utf-8");
+
+      // Look for "- Name: VALUE" (human name)
+      if (!humanName) {
+        const humanMatch = content.match(/^-\s*Name:\s+(.+)$/m);
+        if (humanMatch && humanMatch[1].trim()) {
+          humanName = humanMatch[1].trim();
+        }
+      }
+
+      // Look for "I'm [AgentName]" pattern
+      if (!agentName) {
+        const agentMatch = content.match(/I'm\s+(\w+),/);
+        if (agentMatch && agentMatch[1]) {
+          agentName = agentMatch[1];
+        }
+      }
+    } catch {}
+  }
+
+  // Determine sources
+  let humanSource = null;
+  let agentSource = null;
+
+  if (humanName) {
+    if (fs.existsSync(memoryMdPath)) {
+      const memContent = fs.readFileSync(memoryMdPath, "utf-8");
+      if (memContent.includes(`Name: ${humanName}`)) humanSource = "MEMORY.md";
+    }
+    if (!humanSource && fs.existsSync(userMdPath)) {
+      const userContent = fs.readFileSync(userMdPath, "utf-8");
+      if (userContent.includes(humanName)) humanSource = "USER.md";
+    }
+    if (!humanSource) humanSource = "openclaw.json";
+  }
+
+  if (agentName) {
+    if (fs.existsSync(identityMdPath)) {
+      const idContent = fs.readFileSync(identityMdPath, "utf-8");
+      if (idContent.includes(agentName)) agentSource = "IDENTITY.md";
+    }
+    if (!agentSource && fs.existsSync(memoryMdPath)) {
+      const memContent = fs.readFileSync(memoryMdPath, "utf-8");
+      if (memContent.includes(`I'm ${agentName}`)) agentSource = "MEMORY.md";
+    }
+  }
+
+  return {
+    humanName: humanName || null,
+    agentName: agentName || null,
+    humanNameSource: humanSource,
+    agentNameSource: agentSource,
+  };
 }
 
 async function setup(joinCode) {
@@ -126,28 +192,44 @@ async function setup(joinCode) {
   let identity;
 
   if (detected?.existing) {
-    console.log(pc.green(`  ✓ Existing identity: ${detected.agent_id} (${detected.human_name})`));
+    console.log(pc.green(`  ✓ Existing identity: ${detected.agent_id} (${detected.agent_name} for ${detected.human_name})`));
     identity = detected;
   } else {
-    // Ask for name with auto-detected default
-    let name;
-    if (detected?.name) {
-      console.log(pc.dim(`\n  Detected from ${detected.detectedFrom}: ${pc.bold(detected.name)}`));
+    // Ask for human name
+    let humanName;
+    if (detected.humanName) {
+      console.log(pc.dim(`\n  Detected from ${detected.humanNameSource}: ${pc.bold(detected.humanName)}`));
       const answer = await ask(`  Your name (press Enter to confirm, or type to change): `);
-      name = answer || detected.name;
+      humanName = answer || detected.humanName;
     } else {
-      name = await ask("  What's your name? ");
+      humanName = await ask("\n  What's your name? ");
     }
 
-    if (!name) {
-      console.error(pc.red("  Name is required.\n"));
+    if (!humanName) {
+      console.error(pc.red("  Your name is required.\n"));
       process.exit(1);
     }
 
-    const agentId = `${slugify(name)}-${generateSuffix()}`;
-    identity = { agent_id: agentId, human_name: name };
+    // Ask for agent name
+    let agentName;
+    if (detected.agentName) {
+      console.log(pc.dim(`\n  Detected from ${detected.agentNameSource}: ${pc.bold(detected.agentName)}`));
+      const answer = await ask(`  Agent name (press Enter to confirm, or type to change): `);
+      agentName = answer || detected.agentName;
+    } else {
+      agentName = await ask("\n  What should your agent be called? ");
+    }
+
+    if (!agentName) {
+      console.error(pc.red("  Agent name is required.\n"));
+      process.exit(1);
+    }
+
+    const agentId = `${slugify(agentName)}-${generateSuffix()}`;
+    identity = { agent_id: agentId, human_name: humanName, agent_name: agentName };
     fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2) + "\n");
     console.log(pc.green(`  ✓ Agent ID: ${agentId}`));
+    console.log(pc.dim(`  ${agentName} for ${humanName}`));
   }
 
   // Step 3: Install plugin with proper permission dance
@@ -222,26 +304,35 @@ async function setup(joinCode) {
   console.log(pc.dim(`  Agent ID: ${identity.agent_id}`));
   console.log(pc.dim(`  Data dir: ${DATA_DIR}\n`));
 
-  // Viral loop prompt
+  // Viral loop prompt with clear next steps
   if (joinCode) {
     box([
-      pc.bold(`Connected with invite code ${joinCode}!`),
+      pc.bold(`✓ Connected with invite code ${joinCode}!`),
       "",
-      "Try messaging the inviter:",
-      pc.cyan(`"Message them: hey, just set up AgentLink!"`),
+      "Next steps:",
+      "",
+      "1. Restart your gateway (required):",
+      pc.cyan("   openclaw gateway stop && openclaw gateway"),
+      "",
+      "2. After restart, an auto-hello is sent to the inviter",
+      "",
+      "3. Test it! Tell your agent:",
+      pc.cyan(`   "Message them: hey, just set up AgentLink!"`),
     ]);
   } else {
     box([
-      pc.bold("You're connected!"),
+      pc.bold("✓ AgentLink is ready!"),
       "",
-      "Tell your agent to try it:",
-      pc.cyan(`"Generate an AgentLink invite for [Name]"`),
+      "Next steps:",
+      "",
+      "1. Restart your gateway (required):",
+      pc.cyan("   openclaw gateway stop && openclaw gateway"),
+      "",
+      "2. Generate an invite to connect with someone:",
+      pc.cyan(`   "Generate an AgentLink invite for [Name]"`),
     ]);
   }
-
-  // Gateway restart instructions
-  console.log(pc.yellow("  Restart your gateway to activate AgentLink:"));
-  console.log(pc.bold("    openclaw gateway stop && openclaw gateway\n"));
+  console.log("");
 }
 
 function uninstall() {

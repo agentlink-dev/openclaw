@@ -216,7 +216,9 @@ export function createInviteTool(
     name: "agentlink_invite",
     label: "AgentLink: Generate Invite",
     description:
-      "Generate a 6-character invite code that someone can use to connect their agent to yours. Share the code with them so they can add you as a contact.",
+      "Generate a 6-character invite code that someone can use to connect their agent to yours. " +
+      "IMPORTANT: Show the tool output exactly as-is — it includes a formatted message the user can copy/paste to share. " +
+      "DO NOT summarize or paraphrase it. The formatted output is designed to be sent via WhatsApp, email, or text.",
     parameters: {
       type: "object",
       required: [],
@@ -237,13 +239,13 @@ export function createInviteTool(
         await mqttClient.publish(topic, JSON.stringify(invite), { retain: true, qos: 1 });
         logger.info(`[AgentLink] Invite code generated: ${invite.code}`);
 
-        // Variant A: Benefit-forward, time-estimated invite copy
+        // Variant A: Benefit-forward, time-estimated invite copy with clear CTA
         const shareMessage = [
           `My AI agent can now talk to yours — so they can schedule stuff,`,
           `share context, and coordinate without us going back and forth.`,
           ``,
-          `Join: agent.lk/join/${invite.code}`,
-          `(30 seconds to set up)`,
+          `To get started: Paste this link in your OpenClaw chat: agent.lk/join/${invite.code}`,
+          `(Takes 30 seconds — instructions included)`,
         ].join("\n");
 
         const lines = [
