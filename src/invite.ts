@@ -67,6 +67,24 @@ export async function resolveInviteCode(
     logger.warn(`[AgentLink] Failed to send contact exchange: ${err}`);
   }
 
+  // Send auto-hello message to close the feedback loop for the inviter
+  try {
+    const helloText = "Just connected via AgentLink. Ready to coordinate!";
+    const helloEnvelope = createEnvelope(
+      "message",
+      config.agentId,
+      config.humanName,
+      invite.agent_id,
+      helloText,
+      "auto"
+    );
+    await mqttClient.publish(inboxTopic, JSON.stringify(helloEnvelope));
+    logger.info(`[AgentLink] Auto-hello sent to ${invite.agent_id}`);
+  } catch (err) {
+    // Non-fatal: connection is established even if hello fails
+    logger.warn(`[AgentLink] Failed to send auto-hello: ${err}`);
+  }
+
   return {
     success: true,
     message: `Connected with ${invite.human_name}'s agent (${invite.agent_id}). You can now message them with agentlink_message.`,
