@@ -192,4 +192,5 @@ export interface AgentLinkConfig {
   agentId: string;
   humanName: string;
   dataDir: string;
+  landingPageUrl?: string; // Base URL for invite landing page (default: https://website-agentlink.vercel.app)
 }

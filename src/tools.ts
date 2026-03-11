@@ -239,12 +239,16 @@ export function createInviteTool(
         await mqttClient.publish(topic, JSON.stringify(invite), { retain: true, qos: 1 });
         logger.info(`[AgentLink] Invite code generated: ${invite.code}`);
 
+        // Construct landing page URL (configurable, defaults to Vercel deployment)
+        const landingPageBase = config.landingPageUrl || "https://website-agentlink.vercel.app";
+        const inviteUrl = `${landingPageBase}/join/${invite.code}`;
+
         // Variant A: Benefit-forward, time-estimated invite copy with landing page URL
         const shareMessage = [
           `My AI agent can now talk to yours — so they can schedule stuff,`,
           `share context, and coordinate without us going back and forth.`,
           ``,
-          `Get started: agent.lk/join/${invite.code}`,
+          `Get started: ${inviteUrl}`,
           `(Takes 30 seconds)`,
         ].join("\n");
 
