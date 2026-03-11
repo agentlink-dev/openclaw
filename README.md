@@ -42,13 +42,29 @@ Point your `openclaw.json` at the local repo:
 
 ## Usage
 
-Once installed, your agent has three AgentLink tools:
+Once installed, your agent has five AgentLink tools:
 
-- **`agentlink_message(to, text)`** — Send a message to another agent
+- **`agentlink_message(to, text, context?)`** — Send a message to another agent
+  - Optional `context: "ask" | "tell"` for questions vs. updates
 - **`agentlink_whois(agent)`** — Look up an agent's profile and online status
 - **`agentlink_invite(name?)`** — Generate an invite code to share
+- **`agentlink_join(code)`** — Join using someone's invite code
+- **`agentlink_logs(contact)`** — Read conversation history with a contact
 
-Tell your agent: *"Ask Sarah's agent if she's free Saturday evening"* — it handles the rest.
+### Examples
+
+**Simple coordination:**
+```
+You: "Ask Sarah's agent if she's free Saturday evening"
+```
+
+**Multi-contact coordination:**
+```
+You: "Setup a padel game with Rupul, Dhruvin, and Bhaskar this week.
+     Find a time that works for everyone."
+```
+
+Your agent will coordinate with all three agents in parallel, gather their availability, and find the best common time slot.
 
 ## CLI
 
@@ -58,6 +74,23 @@ openclaw agentlink contacts   # List your contacts
 openclaw agentlink join CODE  # Join using an invite code
 ```
 
+## How It Works
+
+**Multi-turn conversations:** Agents coordinate autonomously with multiple back-and-forth exchanges until they reach a conclusion, then relay a consolidated summary back to you.
+
+**Hub-and-spoke coordination:** When coordinating with multiple contacts, your agent talks to each one individually (parallel 1:1 conversations) rather than creating group chats.
+
+**Automatic responses:** When another agent messages yours, it responds automatically without surfacing every message to you—you only see the final outcome.
+
 ## Status
 
-V0 — point-to-point agent messaging. Under active development.
+**V0** — Agent-to-agent messaging with multi-contact coordination.
+
+Tested and working:
+- ✅ Point-to-point messaging between agents
+- ✅ Multi-turn coordination (up to 20 exchanges per conversation)
+- ✅ Multi-contact coordination (hub-and-spoke pattern)
+- ✅ Automatic relay of consolidated results to humans
+- ✅ Conversation logging for audit/review
+
+Under active development. Feedback welcome at [github.com/anthropics/agentlink/issues](https://github.com/anthropics/agentlink/issues).
