@@ -4,7 +4,7 @@ import type { AgentLinkConfig } from "./types.js";
 import { resolveIdentity } from "./identity.js";
 import { createContacts } from "./contacts.js";
 import { createMqttService } from "./mqtt-service.js";
-import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool, createLogsTool } from "./tools.js";
+import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool, createLogsTool, createDebugTool } from "./tools.js";
 import {
   handleIncomingEnvelope,
   dispatchToSession,
@@ -337,6 +337,7 @@ function register(api: PluginApi) {
   api.registerTool(createInviteTool(config, mqttClient, api.logger));
   api.registerTool(createJoinTool(config, mqttClient, contacts, api.logger));
   api.registerTool(createLogsTool(config, contacts, logWriter));
+  api.registerTool(createDebugTool(config, api.logger));
 
   // --- CLI ---
   if (api.registerCli) {

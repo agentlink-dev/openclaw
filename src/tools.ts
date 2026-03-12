@@ -381,6 +381,52 @@ export function createLogsTool(
 }
 
 // ---------------------------------------------------------------------------
+// Tool: agentlink_debug
+// ---------------------------------------------------------------------------
+
+export function createDebugTool(
+  config: AgentLinkConfig,
+  logger: Logger,
+): ToolDefinition {
+  return {
+    name: "agentlink_debug",
+    label: "AgentLink: Export Debug Logs",
+    description:
+      "Export diagnostic information about AgentLink for troubleshooting. " +
+      "Tells the human how to generate a debug export file they can share for support. " +
+      "Use this when the human reports AgentLink isn't working correctly.",
+    parameters: {
+      type: "object",
+      required: [],
+      properties: {},
+    },
+    async execute(_id, _params) {
+      return text(
+        `I'll help you generate diagnostic logs for AgentLink troubleshooting.\n\n` +
+        `Please run this command in your terminal:\n\n` +
+        `\`\`\`\n` +
+        `agentlink debug\n` +
+        `\`\`\`\n\n` +
+        `This will create a file called \`agentlink-debug-YYYY-MM-DD-HH-MM-SS.tar.gz\` in your home directory.\n\n` +
+        `The export includes:\n` +
+        `- System information (OS, Node.js version, OpenClaw version)\n` +
+        `- AgentLink configuration (plugin settings)\n` +
+        `- Recent gateway logs (last 500 lines)\n` +
+        `- AgentLink-specific log entries\n` +
+        `- Conversation history\n` +
+        `- MQTT connectivity test\n\n` +
+        `**Privacy:** No API keys or credentials are included. Safe to share for support.\n\n` +
+        `Once generated, you can:\n` +
+        `1. Email the file to support\n` +
+        `2. Share it via your preferred file transfer method\n` +
+        `3. Upload to a GitHub issue\n\n` +
+        `Let me know if you need help with anything else!`
+      );
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Helper: read a retained message from a topic
 // ---------------------------------------------------------------------------
 
