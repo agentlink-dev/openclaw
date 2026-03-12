@@ -7,10 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.2.5 - MQTT Stability
+### Planned for v0.2.6 - MQTT Stability
 - Implement exponential backoff (1s → 30s) to prevent stuck-in-loop reconnection failures
 - Increase keepAlive to 120 seconds for better connection stability
 - Add disconnect reason logging for debugging
+
+## [0.2.5] - 2026-03-12
+
+### Fixed
+- **Critical:** CLI now respects `OPENCLAW_STATE_DIR` environment variable
+- Fixes Railway/Docker deployments where OpenClaw uses custom paths (e.g., `/data/.openclaw`)
+- CLI works in multi-user environments (gateway as `openclaw` user, CLI as `root`)
+- Added `AGENTLINK_DATA_DIR` environment variable support for custom data directories
+
+### Changed
+- Path detection: Falls back to `~/.openclaw` if `OPENCLAW_STATE_DIR` not set (backward compatible)
+- Tested on both macOS (homebrew) and Railway (Docker/Linux)
 
 ## [0.2.4] - 2026-03-12 (Stable Release)
 

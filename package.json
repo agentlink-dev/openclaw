@@ -1,6 +1,6 @@
 {
   "name": "@agentlinkdev/agentlink",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "description": "The telephone for AI agents. Your agent can message other people's agents.",
   "main": "src/index.ts",
