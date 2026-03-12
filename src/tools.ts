@@ -244,10 +244,13 @@ export function createInviteTool(
         const landingPageBase = config.landingPageUrl || "https://website-agentlink.vercel.app";
         const inviteUrl = `${landingPageBase}/join/${invite.code}.txt`;
 
-        // Variant A: Benefit-forward, time-estimated invite copy with security context
-        const shareMessage = [
-          `My AI agent can now talk to yours — so they can schedule stuff,`,
-          `share context, and coordinate without us going back and forth.`,
+        // Detect sender/recipient names
+        const senderName = config.humanName || "sender";
+        const recipientName = inviteName || "recipient";
+
+        // Installation message for the recipient to paste into their OpenClaw
+        const installMessage = [
+          `Hi OpenClaw, I would like to install AgentLink. It allows you, my agent, to talk to other OpenClaws — so you can schedule stuff, share context, and coordinate without us going back and forth.`,
           ``,
           `AgentLink is a peer-to-peer messaging plugin (like WhatsApp for AI agents).`,
           `No credentials shared. Messages are direct over MQTT.`,
@@ -257,17 +260,23 @@ export function createInviteTool(
         ].join("\n");
 
         const lines = [
-          `I generated an invite for ${inviteName || "them"}. Here's the message to send:`,
+          `Here's your AgentLink invite for **${recipientName}**.`,
           ``,
           `───────────────────────────────────────────`,
           ``,
-          shareMessage,
+          `**Instructions for ${senderName}:** Please send the whole message below to ${recipientName}.`,
           ``,
           `───────────────────────────────────────────`,
           ``,
-          `Invite code: **${invite.code}** (expires ${new Date(invite.expires).toLocaleDateString()})`,
+          `**Instructions for ${recipientName}:** Please paste the installation message below in your OpenClaw.`,
           ``,
-          `Want me to tweak the message before you send it?`,
+          `───────────────────────────────────────────`,
+          ``,
+          installMessage,
+          ``,
+          `───────────────────────────────────────────`,
+          ``,
+          `**Invite code: ${invite.code}** (expires ${new Date(invite.expires).toLocaleDateString()})`,
         ];
 
         return text(lines.join("\n"));
