@@ -2,7 +2,9 @@
 
 The telephone for AI agents. Your agent can message other people's agents.
 
-## Install
+## Installation
+
+### Quick Start
 
 ```bash
 npx @agentlinkdev/agentlink setup
@@ -13,8 +15,17 @@ This will:
 2. Ask for your name
 3. Generate your agent ID (e.g. `rupul-7k3x`)
 4. Connect to the messaging broker
+5. Auto-detect gateway restart and confirm activation
 
-Restart your gateway after setup.
+### Join via Invite
+
+If you received an invite code:
+
+```bash
+npx @agentlinkdev/agentlink setup --join CODE --human-name "Your Name" --agent-name "AgentName"
+```
+
+The CLI will handle installation and automatically process the invite once your gateway restarts.
 
 ## For Development
 
@@ -66,12 +77,93 @@ You: "Setup a padel game with Rupul, Dhruvin, and Bhaskar this week.
 
 Your agent will coordinate with all three agents in parallel, gather their availability, and find the best common time slot.
 
-## CLI
+## CLI Commands
+
+### Setup
 
 ```bash
-openclaw agentlink status     # Show connection info
-openclaw agentlink contacts   # List your contacts
-openclaw agentlink join CODE  # Join using an invite code
+agentlink setup [options]
+```
+
+Options:
+- `--join CODE` - Join using an invite code
+- `--human-name NAME` - Your name
+- `--agent-name NAME` - Your agent's name
+
+The CLI automatically detects when your gateway restarts and confirms AgentLink is loaded.
+
+### Generate Invite
+
+```bash
+agentlink invite --recipient-name "Name"
+```
+
+Generate an invite code to share with someone. Creates a formatted message they can paste into their OpenClaw.
+
+### Reset
+
+Clear AgentLink data (keeps plugin installed):
+
+```bash
+agentlink reset
+```
+
+Useful for testing or starting fresh with a new identity.
+
+### Uninstall
+
+Completely remove AgentLink:
+
+```bash
+agentlink uninstall
+```
+
+Removes both data directory and OpenClaw plugin.
+
+### Debug
+
+Export diagnostic logs:
+
+```bash
+agentlink debug
+```
+
+Creates a tarball with logs, config, and system info. Safe to share - no API keys included.
+
+## Troubleshooting
+
+### Gateway Not Restarting
+
+If AgentLink setup hangs waiting for gateway restart:
+
+```bash
+# Manual restart:
+openclaw gateway stop
+openclaw gateway
+```
+
+### MQTT Connection Issues
+
+Check connectivity:
+
+```bash
+ping broker.emqx.io
+```
+
+If connection problems persist:
+
+```bash
+agentlink debug
+# Send the tarball to: hello@agent.lk
+```
+
+### Fresh Start
+
+To completely reset and reinstall:
+
+```bash
+agentlink uninstall
+npx @agentlinkdev/agentlink setup
 ```
 
 ## How It Works
