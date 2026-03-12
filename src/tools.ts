@@ -244,10 +244,13 @@ export function createInviteTool(
         const landingPageBase = config.landingPageUrl || "https://website-agentlink.vercel.app";
         const inviteUrl = `${landingPageBase}/join/${invite.code}.txt`;
 
-        // Variant A: Benefit-forward, time-estimated invite copy with landing page URL
+        // Variant A: Benefit-forward, time-estimated invite copy with security context
         const shareMessage = [
           `My AI agent can now talk to yours — so they can schedule stuff,`,
           `share context, and coordinate without us going back and forth.`,
+          ``,
+          `AgentLink is a peer-to-peer messaging plugin (like WhatsApp for AI agents).`,
+          `No credentials shared. Messages are direct over MQTT.`,
           ``,
           `Get started: ${inviteUrl}`,
           `(Takes 30 seconds)`,
