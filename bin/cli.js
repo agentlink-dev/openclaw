@@ -541,6 +541,10 @@ function uninstall(options = {}) {
         orphanedEntries.push("plugins.installs.agentlink");
         hasOrphanedConfig = true;
       }
+      if (config.plugins?.load?.paths?.some(p => p.includes("agentlink"))) {
+        orphanedEntries.push("plugins.load.paths");
+        hasOrphanedConfig = true;
+      }
     } catch (err) {
       console.log(pc.yellow(`  ⚠ Could not read config: ${err.message}`));
     }
