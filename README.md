@@ -120,6 +120,28 @@ agentlink uninstall
 
 Removes both data directory and OpenClaw plugin.
 
+### Doctor
+
+Run comprehensive health check and diagnostics:
+
+```bash
+agentlink doctor [options]
+```
+
+Options:
+- `--format json|md` - Output format (default: human-readable)
+- `--fix` - Automatically fix detected issues
+- `--deep` - Deep scanning of system configuration
+- `--check-mqtt` - Test MQTT broker connectivity
+- `--orphaned-config` - Check for orphaned configuration entries
+
+Examples:
+```bash
+agentlink doctor                    # Basic health check
+agentlink doctor --format json      # Machine-readable output
+agentlink doctor --fix --deep       # Fix issues with deep scan
+```
+
 ### Debug
 
 Export diagnostic logs:

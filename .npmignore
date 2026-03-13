@@ -1,0 +1,18 @@
+# Test files
+test/
+
+# Local development
+.local/
+
+# Build artifacts
+dist/
+*.tgz
+
+# IDE
+.claude/
+
+# OS files
+.DS_Store
+
+# Website
+website-agentlink/

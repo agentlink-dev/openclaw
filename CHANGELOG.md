@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.2.6 - MQTT Stability
-- Implement exponential backoff (1s → 30s) to prevent stuck-in-loop reconnection failures
-- Increase keepAlive to 120 seconds for better connection stability
-- Add disconnect reason logging for debugging
+## [0.2.6] - 2026-03-13
+
+### Added
+- **CLI:** `agentlink doctor` command - Comprehensive health check and diagnostics with options for JSON/Markdown output, automatic fixes, deep scanning, MQTT connectivity testing, and orphaned config detection
+
+### Fixed
+- **Critical:** Fixed invite payload field name mismatch (`from` → `agent_id`) - invitees can now properly connect to sender agents
+- Setup and uninstall bugs with custom data directories now work correctly
+- Uninstall now comprehensively cleans plugin directory and load paths
+- Enhanced uninstall to properly detect and clean `plugins.load.paths` entries
 
 ## [0.2.5] - 2026-03-12
 

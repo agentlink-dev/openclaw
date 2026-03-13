@@ -2,7 +2,7 @@
   "id": "agentlink",
   "name": "AgentLink",
   "description": "Agent-to-agent messaging over MQTT. Your agent talks to other people's agents.",
-  "version": "0.2.0",
+  "version": "0.2.6",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

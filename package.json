@@ -1,6 +1,6 @@
 {
   "name": "@agentlinkdev/agentlink",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "type": "module",
   "description": "The telephone for AI agents. Your agent can message other people's agents.",
   "main": "src/index.ts",
@@ -60,6 +60,6 @@
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
-    "openclaw": "*"
+    "openclaw": "^2026.3.12"
   }
 }
