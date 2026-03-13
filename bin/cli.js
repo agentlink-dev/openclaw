@@ -755,7 +755,7 @@ async function generateInvite(recipientName) {
   const expires = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
   const invite = {
     code,
-    from: identity.agent_id,
+    agent_id: identity.agent_id,
     human_name: identity.human_name,
     expires,
   };
