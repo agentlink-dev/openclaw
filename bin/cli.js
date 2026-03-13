@@ -494,7 +494,7 @@ function reset() {
   });
 }
 
-function uninstall() {
+function uninstall(options = {}) {
   console.log("\n" + pc.bold(pc.yellow("  ⚠ AgentLink Uninstall")) + "\n");
 
   // Check what's installed
@@ -508,17 +508,191 @@ function uninstall() {
     }
   })();
 
-  if (!hasData && !hasPlugin) {
+  // Check for orphaned config entries
+  const configPath = path.join(OPENCLAW_STATE_DIR, "openclaw.json");
+  let hasOrphanedConfig = false;
+  let orphanedEntries = [];
+
+  if (fs.existsSync(configPath)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+
+      if (config.plugins?.entries?.agentlink) {
+        orphanedEntries.push("plugins.entries.agentlink");
+        hasOrphanedConfig = true;
+      }
+      if (config.plugins?.allow?.includes("agentlink")) {
+        orphanedEntries.push("plugins.allow");
+        hasOrphanedConfig = true;
+      }
+      if (config.tools?.alsoAllow?.includes("agentlink")) {
+        orphanedEntries.push("tools.alsoAllow");
+        hasOrphanedConfig = true;
+      }
+      if (config.plugins?.installs?.agentlink) {
+        orphanedEntries.push("plugins.installs.agentlink");
+        hasOrphanedConfig = true;
+      }
+    } catch (err) {
+      console.log(pc.yellow(`  ⚠ Could not read config: ${err.message}`));
+    }
+  }
+
+  if (!hasData && !hasPlugin && !hasOrphanedConfig) {
     console.log(pc.yellow("  No AgentLink installation found."));
     process.exit(0);
   }
 
+  // Show what will be removed
   console.log(pc.dim("  Will remove:"));
   if (hasData) console.log(pc.dim(`    - AgentLink data (${DATA_DIR})`));
   if (hasPlugin) console.log(pc.dim("    - AgentLink plugin from OpenClaw"));
+  if (hasOrphanedConfig) {
+    console.log(pc.dim("    - Orphaned config entries:"));
+    orphanedEntries.forEach(entry => {
+      console.log(pc.dim(`      • ${entry}`));
+    });
+  }
   console.log("");
 
-  // Confirm
+  // Dry run mode
+  if (options.dryRun) {
+    console.log(pc.yellow("  [DRY RUN] No changes will be made"));
+    console.log(pc.dim("  Run without --dry-run to actually uninstall.\n"));
+    process.exit(0);
+  }
+
+  // Confirm (skip if non-interactive)
+  const doUninstall = () => {
+    const cleanupResults = {
+      dataRemoved: false,
+      pluginRemoved: false,
+      configCleaned: false,
+      orphanedEntriesCleaned: [],
+    };
+
+    // Remove plugin first (before cleaning config)
+    if (hasPlugin) {
+      console.log(pc.dim("\n  Removing plugin from OpenClaw..."));
+      try {
+        execSync("openclaw plugins uninstall agentlink", { stdio: "pipe" });
+        console.log(pc.green("  ✓ Plugin removed"));
+        cleanupResults.pluginRemoved = true;
+      } catch (err) {
+        console.log(pc.yellow("  ⚠ Plugin removal failed - will clean config manually"));
+        console.log(pc.dim(`  Error: ${err.message}`));
+      }
+    }
+
+    // Clean up orphaned config entries
+    if (hasOrphanedConfig && fs.existsSync(configPath)) {
+      console.log(pc.dim("  Cleaning OpenClaw config..."));
+
+      try {
+        // Read config
+        const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        let modified = false;
+
+        // Remove plugins.entries.agentlink
+        if (config.plugins?.entries?.agentlink) {
+          delete config.plugins.entries.agentlink;
+          cleanupResults.orphanedEntriesCleaned.push("plugins.entries.agentlink");
+          modified = true;
+        }
+
+        // Remove from plugins.allow array
+        if (config.plugins?.allow?.includes("agentlink")) {
+          config.plugins.allow = config.plugins.allow.filter(p => p !== "agentlink");
+          cleanupResults.orphanedEntriesCleaned.push("plugins.allow");
+          modified = true;
+        }
+
+        // Remove from tools.alsoAllow array
+        if (config.tools?.alsoAllow?.includes("agentlink")) {
+          config.tools.alsoAllow = config.tools.alsoAllow.filter(t => t !== "agentlink");
+          cleanupResults.orphanedEntriesCleaned.push("tools.alsoAllow");
+          modified = true;
+        }
+
+        // Remove plugins.installs.agentlink
+        if (config.plugins?.installs?.agentlink) {
+          delete config.plugins.installs.agentlink;
+          cleanupResults.orphanedEntriesCleaned.push("plugins.installs.agentlink");
+          modified = true;
+        }
+
+        // Write back if modified
+        if (modified) {
+          fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+          console.log(pc.green("  ✓ Config cleaned"));
+          cleanupResults.configCleaned = true;
+
+          // Validate config is still valid JSON
+          try {
+            JSON.parse(fs.readFileSync(configPath, "utf-8"));
+          } catch (err) {
+            console.log(pc.red("  ✗ Config validation failed - config may be corrupted"));
+            console.log(pc.dim(`  Backup available at: ${configPath}.bak`));
+          }
+        }
+      } catch (err) {
+        console.log(pc.yellow(`  ⚠ Config cleanup failed: ${err.message}`));
+      }
+    }
+
+    // Remove data directory
+    if (hasData) {
+      console.log(pc.dim("  Removing data directory..."));
+      try {
+        fs.rmSync(DATA_DIR, { recursive: true, force: true });
+        console.log(pc.green("  ✓ Data removed"));
+        cleanupResults.dataRemoved = true;
+      } catch (err) {
+        console.log(pc.yellow(`  ⚠ Data removal failed: ${err.message}`));
+      }
+    }
+
+    // Summary
+    console.log("");
+    console.log(pc.green("  ✓ AgentLink uninstall complete"));
+    console.log("");
+
+    if (cleanupResults.dataRemoved) {
+      console.log(pc.dim("  ✓ Data directory removed"));
+    }
+    if (cleanupResults.pluginRemoved) {
+      console.log(pc.dim("  ✓ Plugin removed from OpenClaw"));
+    }
+    if (cleanupResults.configCleaned) {
+      console.log(pc.dim("  ✓ Config entries cleaned:"));
+      cleanupResults.orphanedEntriesCleaned.forEach(entry => {
+        console.log(pc.dim(`    • ${entry}`));
+      });
+    }
+
+    console.log("");
+    console.log(pc.dim("  Restart your gateway to apply changes:"));
+    console.log(pc.cyan("  openclaw gateway stop && openclaw gateway"));
+    console.log("");
+
+    // Verify if requested
+    if (options.verify) {
+      console.log(pc.dim("  Running verification..."));
+      try {
+        execSync("npx agentlink doctor --orphaned-config", { stdio: "inherit" });
+      } catch (err) {
+        console.log(pc.yellow("  ⚠ Verification failed - some orphaned entries may remain"));
+      }
+    }
+  };
+
+  // Non-interactive mode
+  if (options.nonInteractive) {
+    doUninstall();
+    return;
+  }
+
+  // Interactive confirmation
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   rl.question(pc.yellow("  Completely remove AgentLink? (y/N): "), (answer) => {
     rl.close();
@@ -528,27 +702,7 @@ function uninstall() {
       process.exit(0);
     }
 
-    // Remove data
-    if (hasData) {
-      console.log(pc.dim("\n  Removing data directory..."));
-      fs.rmSync(DATA_DIR, { recursive: true, force: true });
-      console.log(pc.green("  ✓ Data removed"));
-    }
-
-    // Remove plugin
-    if (hasPlugin) {
-      console.log(pc.dim("  Removing plugin from OpenClaw..."));
-      try {
-        execSync("openclaw plugins uninstall agentlink", { stdio: "pipe" });
-        console.log(pc.green("  ✓ Plugin removed"));
-      } catch (err) {
-        console.log(pc.yellow("  ⚠ Plugin removal failed - you may need to remove manually"));
-        console.log(pc.dim("  Run: openclaw plugins uninstall agentlink"));
-      }
-    }
-
-    console.log(pc.green("\n  ✓ AgentLink completely removed"));
-    console.log(pc.dim("  Restart your gateway to apply changes.\n"));
+    doUninstall();
   });
 }
 
@@ -1554,7 +1708,12 @@ if (command === "setup") {
 } else if (command === "reset") {
   reset();
 } else if (command === "uninstall") {
-  uninstall();
+  const options = {
+    dryRun: args.includes("--dry-run"),
+    verify: args.includes("--verify"),
+    nonInteractive: args.includes("--non-interactive"),
+  };
+  uninstall(options);
 } else if (command === "doctor") {
   await doctor();
 } else if (command === "debug") {
@@ -1571,8 +1730,9 @@ if (command === "setup") {
   console.log("      " + pc.dim("Options: --format json|md, --fix, --deep, --check-mqtt, --orphaned-config\n"));
   console.log("    " + pc.cyan("agentlink reset"));
   console.log("      " + pc.dim("Clear AgentLink data (keeps plugin installed)\n"));
-  console.log("    " + pc.cyan("agentlink uninstall"));
-  console.log("      " + pc.dim("Completely remove AgentLink\n"));
+  console.log("    " + pc.cyan("agentlink uninstall [--dry-run] [--verify] [--non-interactive]"));
+  console.log("      " + pc.dim("Completely remove AgentLink"));
+  console.log("      " + pc.dim("Options: --dry-run (show changes), --verify (run doctor after), --non-interactive\n"));
   console.log("    " + pc.cyan("agentlink debug"));
   console.log("      " + pc.dim("Export diagnostic logs for troubleshooting\n"));
   console.log("  Examples:");
@@ -1584,5 +1744,7 @@ if (command === "setup") {
   console.log("    " + pc.cyan("agentlink doctor --fix --deep"));
   console.log("    " + pc.cyan("agentlink reset"));
   console.log("    " + pc.cyan("agentlink uninstall"));
+  console.log("    " + pc.cyan("agentlink uninstall --dry-run"));
+  console.log("    " + pc.cyan("agentlink uninstall --verify"));
   console.log("    " + pc.cyan("agentlink debug") + "\n");
 }
