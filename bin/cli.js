@@ -372,6 +372,14 @@ async function setup(joinCode, humanNameArg, agentNameArg) {
       config.tools.alsoAllow.push("agentlink");
     }
 
+    // Always configure plugin data_dir to match CLI's DATA_DIR
+    // This ensures CLI and plugin are always in sync
+    if (!config.plugins.entries) config.plugins.entries = {};
+    if (!config.plugins.entries.agentlink) config.plugins.entries.agentlink = {};
+    if (!config.plugins.entries.agentlink.config) config.plugins.entries.agentlink.config = {};
+    config.plugins.entries.agentlink.config.data_dir = DATA_DIR;
+    console.log(pc.dim(`  Configured data_dir: ${DATA_DIR}`));
+
     fs.writeFileSync(OC_CONFIG_PATH, JSON.stringify(config, null, 2));
     spinner2.succeed("Plugin installed");
     console.log(pc.green("  ✓ Permissions configured"));
@@ -649,6 +657,18 @@ function uninstall(options = {}) {
         cleanupResults.dataRemoved = true;
       } catch (err) {
         console.log(pc.yellow(`  ⚠ Data removal failed: ${err.message}`));
+      }
+    }
+
+    // Also remove default location if it exists and is different from DATA_DIR
+    const defaultDataDir = path.join(os.homedir(), ".agentlink");
+    if (fs.existsSync(defaultDataDir) && defaultDataDir !== DATA_DIR) {
+      console.log(pc.dim("  Removing default data directory..."));
+      try {
+        fs.rmSync(defaultDataDir, { recursive: true, force: true });
+        console.log(pc.green("  ✓ Default data removed"));
+      } catch (err) {
+        console.log(pc.yellow(`  ⚠ Default data removal failed: ${err.message}`));
       }
     }
 
