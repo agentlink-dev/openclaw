@@ -23,6 +23,36 @@ function text(t: string): ToolResult {
   return { content: [{ type: "text", text: t }] };
 }
 
+/**
+ * Extract delivery target from OpenClaw sessionKey.
+ * Format: agent:main:{channel}:{chatType}:{identifier}
+ * Returns: channel-appropriate target (e.g., "user:U123", "+31617427785", "channel:C123")
+ */
+function extractDeliveryTarget(sessionKey: string, channel: string): string {
+  const parts = sessionKey.split(":");
+  if (parts.length < 5) return "main"; // Fallback for malformed keys
+
+  const chatType = parts[3]; // "direct", "channel", "group"
+  const identifier = parts.slice(4).join(":"); // Handle identifiers with colons
+
+  // Format based on channel and chat type
+  if (channel === "slack") {
+    if (chatType === "direct") return `user:${identifier.toUpperCase()}`;
+    if (chatType === "channel") return `channel:${identifier.toUpperCase()}`;
+    return identifier;
+  } else if (channel === "discord") {
+    if (chatType === "direct") return `user:${identifier}`;
+    if (chatType === "channel") return `channel:${identifier}`;
+    return identifier;
+  } else if (channel === "whatsapp" || channel === "telegram" || channel === "signal") {
+    // Phone numbers pass through as-is
+    return identifier;
+  }
+
+  // Default: use identifier as-is
+  return identifier;
+}
+
 export function createMessageTool(
   config: AgentLinkConfig,
   mqttClient: MqttClient,
@@ -36,6 +66,8 @@ export function createMessageTool(
     // Capture session context from factory parameter
     const sessionKey = ctx.sessionKey ?? "main";
     const messageChannel = ctx.messageChannel ?? "webchat";
+    const accountId = ctx.agentAccountId ?? "default";
+    const deliveryTarget = extractDeliveryTarget(sessionKey, messageChannel);
 
     // Build dynamic description with current contacts
     const all = contacts.getAll();
@@ -120,9 +152,11 @@ export function createMessageTool(
           // Stash origin context (captured from session) for relay
           if (a2aManager) {
             a2aManager.setOriginContext(agentId, {
-              sessionKey,           // ✓ From factory context closure
-              channel: messageChannel,  // ✓ From factory context closure
+              sessionKey,              // ✓ From factory context closure
+              channel: messageChannel, // ✓ From factory context closure
               agentId: config.agentId,
+              to: deliveryTarget,      // ✓ Extracted from sessionKey
+              accountId,               // ✓ From factory context closure
               timestamp: Date.now(),
             });
           }

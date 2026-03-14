@@ -61,6 +61,8 @@ export interface DispatchOptions {
   onOutboundSent?: () => void;
   /** Called when the agent signals [CONVERSATION_COMPLETE]. */
   onConversationComplete?: () => void;
+  /** Called with agent's response text (for relay scenarios). Takes precedence over MQTT publish. */
+  captureOutbound?: (responseText: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,30 +83,33 @@ export async function dispatchToSession(
   channelApi: ChannelApi,
   ocConfig: Record<string, unknown>,
   logger: Logger,
-  options?: DispatchOptions,
+  options?: DispatchOptions & { sessionKey?: string; targetChannel?: string },
 ): Promise<void> {
   try {
-    // 1. Resolve route → per-contact session key
-    const route = channelApi.routing.resolveAgentRoute({
+    // 1. Determine target channel and session key
+    const targetChannel = options?.targetChannel || "agentlink";
+    const sessionKey = options?.sessionKey || channelApi.routing.resolveAgentRoute({
       cfg: ocConfig,
-      channel: "agentlink",
+      channel: targetChannel,
       accountId: config.agentId,
-      peer: { kind: "direct", id: senderAgentId },
-    });
+      peer: targetChannel === "agentlink" ? { kind: "direct", id: senderAgentId } : undefined,
+    }).sessionKey;
 
     // 2. Build + finalize inbound context
+    // For relay (targetChannel = "slack"/"whatsapp"), match the target channel in all fields
+    // For A2A (targetChannel = "agentlink"), use agentlink identifiers
     const ctx = channelApi.reply.finalizeInboundContext({
       Body: text,
       BodyForAgent: text,
-      SessionKey: route.sessionKey,
-      From: `agentlink:${senderAgentId}`,
-      To: `agentlink:${config.agentId}`,
-      Provider: "agentlink",
-      Surface: "agentlink",
-      OriginatingChannel: "agentlink",
+      SessionKey: sessionKey,
+      From: targetChannel === "agentlink" ? `agentlink:${senderAgentId}` : targetChannel,
+      To: targetChannel === "agentlink" ? `agentlink:${config.agentId}` : config.agentId,
+      Provider: targetChannel,
+      Surface: targetChannel,
+      OriginatingChannel: targetChannel,
       OriginatingTo: config.agentId,
       SenderName: senderAgentId,
-      SenderId: senderAgentId,
+      SenderId: targetChannel === "agentlink" ? senderAgentId : targetChannel,
       ChatType: "direct",
       CommandAuthorized: true,
       Timestamp: Date.now(),
@@ -114,11 +119,11 @@ export async function dispatchToSession(
     const cfgAny = ocConfig as Record<string, any>;
     const storePath = channelApi.session.resolveStorePath(
       cfgAny.session?.store ?? cfgAny.store,
-      { agentId: route.agentId },
+      { agentId: config.agentId },
     );
     await channelApi.session.recordInboundSession({
       storePath,
-      sessionKey: route.sessionKey,
+      sessionKey: sessionKey,
       ctx,
       onRecordError: (err) => logger.warn(`[AgentLink] recordInboundSession error: ${err}`),
     });
@@ -150,9 +155,9 @@ export async function dispatchToSession(
           // Accumulate text
           if (payload.text) accumulated += payload.text;
 
-          // On final: publish the accumulated response back to sender via MQTT
-          // Guard: only publish once (deliver may fire "final" multiple times)
-          if (info.kind === "final" && !published && options?.mqttClient && accumulated.trim()) {
+          // On final: handle the accumulated response
+          // Guard: only handle once (deliver may fire "final" multiple times)
+          if (info.kind === "final" && !published && accumulated.trim()) {
             published = true;
             let responseText = accumulated.trim();
 
@@ -164,40 +169,53 @@ export async function dispatchToSession(
               responseText = responseText.replace(completeMarker, "").trim();
             }
 
-            const contact = options.contacts?.findByAgentId(senderAgentId);
+            const contact = options?.contacts?.findByAgentId(senderAgentId);
 
             // Log the outbound
-            if (options.logWriter && responseText) {
+            if (options?.logWriter && responseText) {
               options.logWriter.logOutbound(senderAgentId, contact?.entry.human_name ?? senderAgentId, responseText);
             }
 
-            // Always publish the response to MQTT (the other side needs the answer).
-            // CONVERSATION_COMPLETE means: send this final answer, then pause on this side.
-            const envelope = createEnvelope(
-              "message",
-              config.agentId,
-              config.humanName,
-              senderAgentId,
-              responseText,
-              "auto",
-            );
-            const topic = TOPICS.inbox(senderAgentId, config.agentId);
-
-            try {
-              await options.mqttClient.publish(topic, JSON.stringify(envelope));
-              const label = contact ? `${contact.name}'s agent (${senderAgentId})` : senderAgentId;
-              logger.info(`[AgentLink] Auto-response sent to ${label}`);
-
-              if (isComplete) {
-                // Final answer published. Pause this side — don't auto-respond to further messages.
-                logger.info(`[AgentLink] Conversation with ${label} completed (agent signaled DONE)`);
-                options.onConversationComplete?.();
-              } else {
-                options.onOutboundSent?.();
+            // If captureOutbound is provided (relay scenario), call it instead of MQTT publish
+            if (options?.captureOutbound) {
+              try {
+                await options.captureOutbound(responseText);
+                logger.info(`[AgentLink] Relay response captured and delivered`);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                logger.warn(`[AgentLink] Failed to deliver relay: ${msg}`);
               }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              logger.warn(`[AgentLink] Failed to send auto-response: ${msg}`);
+              return;
+            }
+
+            // Otherwise: publish the response to MQTT (normal A2A flow)
+            if (options?.mqttClient) {
+              const envelope = createEnvelope(
+                "message",
+                config.agentId,
+                config.humanName,
+                senderAgentId,
+                responseText,
+                "auto",
+              );
+              const topic = TOPICS.inbox(senderAgentId, config.agentId);
+
+              try {
+                await options.mqttClient.publish(topic, JSON.stringify(envelope));
+                const label = contact ? `${contact.name}'s agent (${senderAgentId})` : senderAgentId;
+                logger.info(`[AgentLink] Auto-response sent to ${label}`);
+
+                if (isComplete) {
+                  // Final answer published. Pause this side — don't auto-respond to further messages.
+                  logger.info(`[AgentLink] Conversation with ${label} completed (agent signaled DONE)`);
+                  options?.onConversationComplete?.();
+                } else {
+                  options?.onOutboundSent?.();
+                }
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                logger.warn(`[AgentLink] Failed to send auto-response: ${msg}`);
+              }
             }
           }
         },
@@ -218,11 +236,56 @@ export async function dispatchToSession(
 // ---------------------------------------------------------------------------
 
 /**
- * Relay a prompt into the human's main session (SessionKey: "main").
- * The relay text is pre-formatted by the caller (e.g., consolidated summary, status prompt).
- * The main session LLM processes the prompt and responds to the human.
+ * Send a message to any OpenClaw channel using the appropriate channel-specific API.
+ * Works for Slack, Discord, Telegram, WhatsApp, Signal, and other official channels.
  */
-export async function relayToMainSession(
+export async function sendToChannel(params: {
+  channel: string;
+  to: string;
+  message: string;
+  accountId?: string;
+  runtime: any;
+  cfg: any;
+  logger: Logger;
+}): Promise<void> {
+  const { channel, to, message, accountId, runtime, cfg, logger } = params;
+
+  try {
+    switch (channel.toLowerCase()) {
+      case "slack":
+        await runtime.channel.slack.sendMessageSlack(to, message, { accountId, cfg });
+        break;
+      case "discord":
+        await runtime.channel.discord.sendMessageDiscord(to, message, { accountId, cfg });
+        break;
+      case "telegram":
+        await runtime.channel.telegram.sendMessageTelegram(to, message, { accountId, cfg });
+        break;
+      case "whatsapp":
+        await runtime.channel.whatsapp.sendMessageWhatsApp(to, message, { accountId, cfg });
+        break;
+      case "signal":
+        await runtime.channel.signal.sendMessageSignal(to, message, { accountId, cfg });
+        break;
+      default:
+        logger.warn(`[AgentLink] Unsupported channel for direct delivery: ${channel}`);
+        throw new Error(`Channel "${channel}" does not support direct delivery via AgentLink`);
+    }
+
+    logger.info(`[AgentLink] Delivered relay to ${channel} (${to})`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(`[AgentLink] Failed to deliver to ${channel}: ${msg}`);
+    throw err;
+  }
+}
+
+/**
+ * Relay a prompt into the session where the human initiated the A2A conversation.
+ * The relay text is pre-formatted by the caller (e.g., consolidated summary, status prompt).
+ * Uses channel-specific delivery APIs to send directly to Slack/WhatsApp/Discord/etc.
+ */
+export async function relayToInitiatingSession(
   relayText: string,
   senderAgentId: string,
   senderHumanName: string | undefined,
@@ -231,78 +294,38 @@ export async function relayToMainSession(
   ocConfig: Record<string, unknown>,
   logger: Logger,
   originCtx?: OriginContext,
+  runtime?: any,
 ): Promise<void> {
   const senderLabel = senderHumanName
     ? `${senderHumanName}'s agent (${senderAgentId})`
     : senderAgentId;
 
   try {
-    // When relaying, we want the MAIN session where the human is, NOT a per-sender session.
-    // Call resolveAgentRoute WITHOUT peer to get the default channel session.
-    const targetChannel = originCtx?.channel ?? "webchat";
-    const route = channelApi.routing.resolveAgentRoute({
+    // Use origin context for delivery
+    if (!originCtx || !runtime) {
+      logger.warn(`[AgentLink] Missing origin context or runtime - cannot deliver relay`);
+      return;
+    }
+
+    const { channel, to, accountId, sessionKey } = originCtx;
+
+    logger.info(`[AgentLink] Relay targeting ${channel} session: ${sessionKey} (${to})`);
+
+    // Use channel-specific delivery API
+    await sendToChannel({
+      channel,
+      to,
+      message: relayText,
+      accountId,
+      runtime,
       cfg: ocConfig,
-      channel: targetChannel,
-      accountId: originCtx?.agentId ?? config.agentId,
-      // NO peer parameter — this gets us the main/default session, not a per-agent session
+      logger,
     });
 
-    const agentId = route.agentId;
-    const sessionKey = originCtx?.sessionKey ?? route.sessionKey;
-
-    logger.info(`[AgentLink] Relay targeting session: ${targetChannel}:${sessionKey}`);
-
-    // Build context with matching identifiers (no unique per-sender ID)
-    // This ensures the relay routes to the main session, not a new per-agent session
-    const ctx = channelApi.reply.finalizeInboundContext({
-      Body: relayText,
-      BodyForAgent: relayText,
-      SessionKey: sessionKey,
-      From: targetChannel, // Match the channel, not the sender agent
-      To: config.agentId,
-      Provider: targetChannel,
-      Surface: targetChannel,
-      OriginatingChannel: targetChannel,
-      OriginatingTo: config.agentId,
-      SenderName: senderLabel, // Keep for display
-      SenderId: targetChannel, // Match SessionKey origin, not sender
-      ChatType: "direct",
-      CommandAuthorized: true,
-      Timestamp: Date.now(),
-    });
-
-    const cfgAny = ocConfig as Record<string, any>;
-    const storePath = channelApi.session.resolveStorePath(
-      cfgAny.session?.store ?? cfgAny.store,
-      { agentId },
-    );
-
-    await channelApi.session.recordInboundSession({
-      storePath,
-      sessionKey,
-      ctx,
-      onRecordError: (err) => logger.warn(`[AgentLink] recordInboundSession (relay) error: ${err}`),
-    });
-
-    // Dispatch — the main session LLM processes the relay and responds to the human
-    await channelApi.reply.dispatchReplyWithBufferedBlockDispatcher({
-      ctx,
-      cfg: ocConfig,
-      dispatcherOptions: {
-        deliver: async () => {
-          // Relay responses go to the UI only — no MQTT outbound
-        },
-        onError: (err, info) => {
-          logger.warn(`[AgentLink] relay dispatch ${info.kind} error: ${err}`);
-        },
-      },
-      replyOptions: { disableBlockStreaming: true },
-    });
-
-    logger.info(`[AgentLink] Relayed to main session (from ${senderAgentId})`);
+    logger.info(`[AgentLink] Relay delivered to initiating session (from ${senderAgentId})`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn(`[AgentLink] Failed to relay to main session: ${msg}`);
+    logger.warn(`[AgentLink] Failed to relay to initiating session: ${msg}`);
   }
 }
 
@@ -537,7 +560,7 @@ export function handleIncomingEnvelope(
       // Inject notification to main session
       if (channelApi && ocConfig) {
         const notificationText = `[AgentLink] Connection confirmed! ${envelope.from_name}'s agent (${envelope.from}) received your contact exchange.`;
-        relayToMainSession(
+        relayToInitiatingSession(
           notificationText,
           envelope.from,
           envelope.from_name,

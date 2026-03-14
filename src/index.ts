@@ -9,7 +9,6 @@ import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool, c
 import {
   handleIncomingEnvelope,
   dispatchToSession,
-  relayToMainSession,
   formatConsolidatedSummaryPrompt,
   formatStatusPrompt,
 } from "./channel.js";
@@ -125,9 +124,31 @@ function register(api: PluginApi) {
         const relayText = formatConsolidatedSummaryPrompt(
           contactAgentId, contactName, count, log, "silence",
         );
-        relayToMainSession(
-          relayText, contactAgentId, contactName, config,
-          api.runtime.channel, api.config, api.logger, ctx,
+        // Send instruction prompt to Arya in the origin session (Slack/WhatsApp)
+        dispatchToSession(
+          relayText,
+          contactAgentId,
+          config,
+          api.runtime.channel,
+          api.config,
+          api.logger,
+          {
+            sessionKey: ctx.sessionKey,
+            targetChannel: ctx.channel,
+            mqttClient: undefined,
+            captureOutbound: async (responseText) => {
+              const { sendToChannel } = await import("./channel.js");
+              await sendToChannel({
+                channel: ctx.channel,
+                to: ctx.to,
+                message: responseText,
+                accountId: ctx.accountId,
+                runtime: api.runtime,
+                cfg: api.config,
+                logger: api.logger,
+              });
+            },
+          },
         ).catch((err) => {
           api.logger.warn(`[AgentLink] Failed to relay silence summary: ${err}`);
         });
@@ -151,20 +172,66 @@ function register(api: PluginApi) {
       if (a2aManager.isPaused(contactAgentId) || !api.runtime?.channel) return;
       const prompt = formatStatusPrompt(contactAgentId, contactName, 1);
       const originCtx = a2aManager.getOriginContext(contactAgentId);
-      relayToMainSession(
-        prompt, contactAgentId, contactName, config,
-        api.runtime.channel, api.config, api.logger, originCtx,
-      ).catch(() => {});
+      if (originCtx) {
+        dispatchToSession(
+          prompt,
+          contactAgentId,
+          config,
+          api.runtime.channel,
+          api.config,
+          api.logger,
+          {
+            sessionKey: originCtx.sessionKey,
+            targetChannel: originCtx.channel,
+            mqttClient: undefined,
+            captureOutbound: async (responseText) => {
+              const { sendToChannel } = await import("./channel.js");
+              await sendToChannel({
+                channel: originCtx.channel,
+                to: originCtx.to,
+                message: responseText,
+                accountId: originCtx.accountId,
+                runtime: api.runtime,
+                cfg: api.config,
+                logger: api.logger,
+              });
+            },
+          },
+        ).catch(() => {});
+      }
     }, 15_000);
 
     t.status45 = setTimeout(() => {
       if (a2aManager.isPaused(contactAgentId) || !api.runtime?.channel) return;
       const prompt = formatStatusPrompt(contactAgentId, contactName, 2);
       const originCtx = a2aManager.getOriginContext(contactAgentId);
-      relayToMainSession(
-        prompt, contactAgentId, contactName, config,
-        api.runtime.channel, api.config, api.logger, originCtx,
-      ).catch(() => {});
+      if (originCtx) {
+        dispatchToSession(
+          prompt,
+          contactAgentId,
+          config,
+          api.runtime.channel,
+          api.config,
+          api.logger,
+          {
+            sessionKey: originCtx.sessionKey,
+            targetChannel: originCtx.channel,
+            mqttClient: undefined,
+            captureOutbound: async (responseText) => {
+              const { sendToChannel } = await import("./channel.js");
+              await sendToChannel({
+                channel: originCtx.channel,
+                to: originCtx.to,
+                message: responseText,
+                accountId: originCtx.accountId,
+                runtime: api.runtime,
+                cfg: api.config,
+                logger: api.logger,
+              });
+            },
+          },
+        ).catch(() => {});
+      }
     }, 45_000);
 
     t.noResponse60 = setTimeout(() => {
@@ -178,10 +245,31 @@ function register(api: PluginApi) {
           contactAgentId, contactName, count, log, "no_response",
         );
         const originCtx = a2aManager.getOriginContext(contactAgentId);
-        relayToMainSession(
-          relayText, contactAgentId, contactName, config,
-          api.runtime.channel, api.config, api.logger, originCtx,
-        ).catch(() => {});
+        if (originCtx) {
+          dispatchToSession(
+            relayText,
+            contactAgentId,
+            config,
+            api.runtime.channel,
+            api.config,
+            api.logger,
+            {
+              mqttClient: undefined,
+              captureOutbound: async (responseText) => {
+                const { sendToChannel } = await import("./channel.js");
+                await sendToChannel({
+                  channel: originCtx.channel,
+                  to: originCtx.to,
+                  message: responseText,
+                  accountId: originCtx.accountId,
+                  runtime: api.runtime,
+                  cfg: api.config,
+                  logger: api.logger,
+                });
+              },
+            },
+          ).catch(() => {});
+        }
         clearContactTimers(contactAgentId);
       }
     }, 60_000);
@@ -271,9 +359,35 @@ function register(api: PluginApi) {
                     senderAgentId, cName, count, log, "silence",
                   );
                   api.logger.info(`[AgentLink] A2A with ${senderAgentId} completed — relaying to human`);
-                  relayToMainSession(
-                    relayText, senderAgentId, cName,
-                    config, api.runtime.channel, api.config, api.logger, originCtx,
+
+                  // Send instruction prompt to Arya in the origin session (Slack/WhatsApp)
+                  // Arya processes it and we capture the response for delivery
+                  dispatchToSession(
+                    relayText,
+                    senderAgentId,
+                    config,
+                    api.runtime.channel,
+                    api.config,
+                    api.logger,
+                    {
+                      sessionKey: originCtx.sessionKey,
+                      targetChannel: originCtx.channel,
+                      // No MQTT publish for relay messages
+                      mqttClient: undefined,
+                      // Capture Arya's response and deliver to Slack/WhatsApp
+                      captureOutbound: async (responseText) => {
+                        const { sendToChannel } = await import("./channel.js");
+                        await sendToChannel({
+                          channel: originCtx.channel,
+                          to: originCtx.to,
+                          message: responseText,
+                          accountId: originCtx.accountId,
+                          runtime: api.runtime,
+                          cfg: api.config,
+                          logger: api.logger,
+                        });
+                      },
+                    },
                   ).catch((err) => {
                     api.logger.warn(`[AgentLink] Failed to relay completion summary: ${err}`);
                   });
@@ -288,12 +402,36 @@ function register(api: PluginApi) {
                   senderAgentId, contact?.entry.human_name, count, log, "exchange_limit",
                 );
                 const originCtx = a2aManager.getOriginContext(senderAgentId);
-                relayToMainSession(
-                  relayText, senderAgentId, contact?.entry.human_name,
-                  config, api.runtime.channel, api.config, api.logger, originCtx,
-                ).catch((err) => {
-                  api.logger.warn(`[AgentLink] Failed to relay exchange limit summary: ${err}`);
-                });
+                if (originCtx) {
+                  // Send instruction prompt to Arya in the origin session (Slack/WhatsApp)
+                  dispatchToSession(
+                    relayText,
+                    senderAgentId,
+                    config,
+                    api.runtime.channel,
+                    api.config,
+                    api.logger,
+                    {
+                      sessionKey: originCtx.sessionKey,
+                      targetChannel: originCtx.channel,
+                      mqttClient: undefined,
+                      captureOutbound: async (responseText) => {
+                        const { sendToChannel } = await import("./channel.js");
+                        await sendToChannel({
+                          channel: originCtx.channel,
+                          to: originCtx.to,
+                          message: responseText,
+                          accountId: originCtx.accountId,
+                          runtime: api.runtime,
+                          cfg: api.config,
+                          logger: api.logger,
+                        });
+                      },
+                    },
+                  ).catch((err) => {
+                    api.logger.warn(`[AgentLink] Failed to relay exchange limit summary: ${err}`);
+                  });
+                }
                 clearContactTimers(senderAgentId);
               }
             }).catch((err) => {

@@ -41,6 +41,8 @@ export interface OriginContext {
   sessionKey: string;
   channel: string;
   agentId: string;
+  to: string;           // Delivery target: "+31617427785", "user:U123", "channel:C123"
+  accountId: string;    // Account ID: "default" or specific account
   timestamp: number;
 }
 
