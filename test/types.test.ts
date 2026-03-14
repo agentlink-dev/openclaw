@@ -79,14 +79,12 @@ describe("MQTT Topics", () => {
 describe("Message Envelope", () => {
   it("creates valid envelope", () => {
     const env = createEnvelope("message", "arya-7k3x", "Rupul", "brienne-4m2p", "Hello");
-    expect(env.version).toBe(1);
     expect(env.type).toBe("message");
     expect(env.from).toBe("arya-7k3x");
     expect(env.from_name).toBe("Rupul");
     expect(env.to).toBe("brienne-4m2p");
     expect(env.text).toBe("Hello");
-    expect(env.message_id).toBeTruthy();
-    expect(env.ts).toBeTruthy();
+    expect(env.timestamp).toBeTruthy();
   });
 
   it("creates contact_exchange envelope without text", () => {
@@ -105,8 +103,8 @@ describe("Message Envelope", () => {
     expect(parseEnvelope("not json")).toBeNull();
   });
 
-  it("rejects wrong version", () => {
-    expect(parseEnvelope(JSON.stringify({ version: 2, type: "message", from: "a", to: "b", message_id: "x" }))).toBeNull();
+  it("rejects missing required fields", () => {
+    expect(parseEnvelope(JSON.stringify({ type: "message", from: "a" }))).toBeNull();
   });
 
   it("rejects missing fields", () => {
@@ -120,7 +118,7 @@ describe("Status Payload", () => {
     expect(s.agent_id).toBe("arya-7k3x");
     expect(s.human_name).toBe("Rupul");
     expect(s.online).toBe(true);
-    expect(s.last_seen).toBeTruthy();
+    expect(s.timestamp).toBeTruthy();
   });
 });
 

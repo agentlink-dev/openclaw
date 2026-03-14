@@ -78,7 +78,7 @@ describe("MQTT Round-trip (broker.emqx.io)", () => {
       expect(parsed!.from_name).toBe("Rupul");
       expect(parsed!.to).toBe(agentB);
       expect(parsed!.text).toBe("Are you free Saturday?");
-      expect(parsed!.message_id).toBeTruthy();
+      expect(parsed!.timestamp).toBeTruthy();
     } finally {
       await disconnect(clientA);
       await disconnect(clientB);

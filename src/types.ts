@@ -154,7 +154,7 @@ export function isInviteExpired(invite: InvitePayload): boolean {
   return new Date(invite.expires) < new Date();
 }
 
-function generateInviteCode(): string {
+export function generateInviteCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No confusing chars (0,O,I,1)
   return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
