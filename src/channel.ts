@@ -2,8 +2,9 @@ import type { MessageEnvelope, AgentLinkConfig } from "./types.js";
 import { createEnvelope, TOPICS } from "./types.js";
 import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
-import type { A2ASessionManager } from "./a2a-session.js";
+import type { A2ASessionManager, OriginContext } from "./a2a-session.js";
 import type { A2ALogWriter } from "./a2a-log.js";
+import type { InvitationsStore } from "./invitations.js";
 
 // ---------------------------------------------------------------------------
 // OC Channel Runtime API types (subset used by AgentLink inbound dispatch)
@@ -229,40 +230,51 @@ export async function relayToMainSession(
   channelApi: ChannelApi,
   ocConfig: Record<string, unknown>,
   logger: Logger,
+  originCtx?: OriginContext,
 ): Promise<void> {
   const senderLabel = senderHumanName
     ? `${senderHumanName}'s agent (${senderAgentId})`
     : senderAgentId;
 
   try {
-    // Resolve the webchat route to get the ACTUAL session key the user is viewing.
-    // Don't hardcode "main" — OC may assign a different key depending on dmScope config.
+    // Use origin context if available (routes back to originating session, e.g., Slack)
+    // Otherwise fall back to webchat:main
     let agentId = config.agentId;
-    let sessionKey = "main"; // fallback
-    try {
-      const route = channelApi.routing.resolveAgentRoute({
-        cfg: ocConfig,
-        channel: "webchat",
-        accountId: config.agentId,
-      });
-      agentId = route.agentId;
-      if (route.sessionKey) sessionKey = route.sessionKey;
-    } catch {
-      // Use defaults
+    let sessionKey = "main";
+    let targetChannel = "webchat";
+
+    if (originCtx) {
+      // Route back to the session where the human initiated the A2A conversation
+      targetChannel = originCtx.channel;
+      sessionKey = originCtx.sessionKey;
+      agentId = originCtx.agentId;
+      logger.info(`[AgentLink] Relay targeting origin session: ${targetChannel}:${sessionKey}`);
+    } else {
+      // No origin context — fall back to webchat:main
+      try {
+        const route = channelApi.routing.resolveAgentRoute({
+          cfg: ocConfig,
+          channel: "webchat",
+          accountId: config.agentId,
+        });
+        agentId = route.agentId;
+        if (route.sessionKey) sessionKey = route.sessionKey;
+      } catch {
+        // Use defaults
+      }
+      logger.info(`[AgentLink] Relay targeting fallback session: ${targetChannel}:${sessionKey}`);
     }
 
-    logger.info(`[AgentLink] Relay targeting session: ${sessionKey}`);
-
-    // Target the user's actual webchat session
+    // Target the user's actual session (origin or fallback)
     const ctx = channelApi.reply.finalizeInboundContext({
       Body: relayText,
       BodyForAgent: relayText,
       SessionKey: sessionKey,
       From: `agentlink:relay:${senderAgentId}`,
       To: config.agentId,
-      Provider: "webchat",
-      Surface: "webchat",
-      OriginatingChannel: "webchat",
+      Provider: targetChannel,
+      Surface: targetChannel,
+      OriginatingChannel: targetChannel,
       OriginatingTo: config.agentId,
       SenderName: senderLabel,
       SenderId: `agentlink:${senderAgentId}`,
@@ -503,7 +515,7 @@ export function formatStatusPrompt(
 /**
  * Handle an incoming message envelope:
  * 1. For "message" type: inject into A2A session (with outbound capture)
- * 2. For "contact_exchange" type: auto-add to contacts
+ * 2. For "contact_exchange" type: auto-add to contacts and send ack
  */
 export function handleIncomingEnvelope(
   envelope: MessageEnvelope,
@@ -511,18 +523,82 @@ export function handleIncomingEnvelope(
   contacts: ContactsStore,
   logger: Logger,
   injectToSession: (text: string, senderAgentId: string) => void,
+  mqttClient?: MqttClient,
+  channelApi?: ChannelApi,
+  ocConfig?: Record<string, unknown>,
+  invitations?: InvitationsStore,
 ): void {
   if (envelope.type === "contact_exchange") {
-    // Auto-add sender to contacts
+    if (envelope.ack) {
+      // This is an acknowledgment — log confirmation and notify human
+      logger.info(`[AgentLink] Connection confirmed with ${envelope.from_name} (${envelope.from})`);
+
+      // Inject notification to main session
+      if (channelApi && ocConfig) {
+        const notificationText = `[AgentLink] Connection confirmed! ${envelope.from_name}'s agent (${envelope.from}) received your contact exchange.`;
+        relayToMainSession(
+          notificationText,
+          envelope.from,
+          envelope.from_name,
+          config,
+          channelApi,
+          ocConfig,
+          logger,
+        ).catch((err) => {
+          logger.warn(`[AgentLink] Failed to relay connection confirmation: ${err}`);
+        });
+      }
+      return;
+    }
+
+    // Not an ack — process contact_exchange and send ack back
     const existingContact = contacts.findByAgentId(envelope.from);
     if (!existingContact) {
       const name = envelope.from_name?.toLowerCase() || envelope.from;
-      contacts.add(name, envelope.from, envelope.from_name);
+      contacts.add(name, envelope.from, envelope.from_name, envelope.capabilities);
       logger.info(`[AgentLink] New contact added: ${envelope.from_name} (${envelope.from})`);
+
+      // Update any matching sent invites to "accepted" status
+      if (invitations) {
+        const sent = invitations.getSent();
+        // Find any pending invite (most recent one, as we don't have exact code in envelope)
+        const pendingInvite = sent.find(
+          inv => inv.status === "pending" && !inv.accepted_by
+        );
+        if (pendingInvite) {
+          invitations.updateSentStatus(pendingInvite.code, "accepted", envelope.from);
+          logger.info(`[AgentLink] Marked invite ${pendingInvite.code} as accepted by ${envelope.from}`);
+        }
+      }
+
       injectToSession(
         `[AgentLink] ${envelope.from_name}'s agent (${envelope.from}) has connected! They are now in your contacts. You can message them anytime.`,
         envelope.from,
       );
+    }
+
+    // Send ack back to sender
+    if (mqttClient) {
+      const ackEnvelope = createEnvelope(
+        "contact_exchange",
+        config.agentId,
+        config.humanName,
+        envelope.from,
+        undefined, // text
+        undefined, // origin
+        undefined, // context
+        config.capabilities, // capabilities
+      );
+      ackEnvelope.ack = true;
+      const ackTopic = TOPICS.inbox(envelope.from, config.agentId);
+
+      mqttClient.publish(ackTopic, JSON.stringify(ackEnvelope))
+        .then(() => {
+          logger.info(`[AgentLink] Sent ack to ${envelope.from}`);
+        })
+        .catch((err) => {
+          logger.warn(`[AgentLink] Failed to send ack: ${err}`);
+        });
     }
     return;
   }

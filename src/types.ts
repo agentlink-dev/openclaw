@@ -85,6 +85,8 @@ export interface MessageEnvelope {
   text?: string;
   origin?: MessageOrigin;
   context?: MessageContext;  // Optional: defaults to "ask"
+  capabilities?: string[];  // Optional: agent's capabilities
+  ack?: boolean;  // Acknowledgment flag for contact_exchange
   ts: string;
   message_id: string;
 }
@@ -97,6 +99,7 @@ export function createEnvelope(
   text?: string,
   origin?: MessageOrigin,
   context?: MessageContext,
+  capabilities?: string[],
 ): MessageEnvelope {
   return {
     version: 1,
@@ -107,6 +110,7 @@ export function createEnvelope(
     text,
     origin,
     context,
+    capabilities,
     ts: new Date().toISOString(),
     message_id: uuid(),
   };
@@ -193,4 +197,5 @@ export interface AgentLinkConfig {
   humanName: string;
   dataDir: string;
   landingPageUrl?: string; // Base URL for invite landing page (default: https://website-agentlink.vercel.app)
+  capabilities?: string[]; // Agent's capabilities (plugins, skills, tools)
 }

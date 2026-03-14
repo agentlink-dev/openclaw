@@ -4,6 +4,7 @@ import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
 import type { A2ASessionManager } from "./a2a-session.js";
 import type { A2ALogWriter } from "./a2a-log.js";
+import type { InvitationsStore } from "./invitations.js";
 import { resolveInviteCode } from "./invite.js";
 
 // ---------------------------------------------------------------------------
@@ -193,6 +194,12 @@ export function createWhoisTool(
         ];
         if (localContact) {
           lines.push(`Your contact name: ${localContact.name}`);
+          if (localContact.entry.capabilities && localContact.entry.capabilities.length > 0) {
+            lines.push(`\nCapabilities (${localContact.entry.capabilities.length}):`);
+            for (const cap of localContact.entry.capabilities) {
+              lines.push(`  - ${cap}`);
+            }
+          }
         }
         return text(lines.join("\n"));
       } catch (err) {
@@ -211,6 +218,7 @@ export function createInviteTool(
   config: AgentLinkConfig,
   mqttClient: MqttClient,
   logger: Logger,
+  invitations?: InvitationsStore,
 ): ToolDefinition {
   return {
     name: "agentlink_invite",
@@ -238,6 +246,11 @@ export function createInviteTool(
       try {
         await mqttClient.publish(topic, JSON.stringify(invite), { retain: true, qos: 1 });
         logger.info(`[AgentLink] Invite code generated: ${invite.code}`);
+
+        // Track the sent invite
+        if (invitations) {
+          invitations.addSent(invite.code, inviteName, invite.expires);
+        }
 
         // Construct landing page URL (configurable, defaults to Vercel deployment)
         // Use .txt extension for reliable plain text delivery to LLMs
@@ -298,6 +311,7 @@ export function createJoinTool(
   mqttClient: MqttClient,
   contacts: ContactsStore,
   logger: Logger,
+  invitations?: InvitationsStore,
 ): ToolDefinition {
   return {
     name: "agentlink_join",
@@ -319,7 +333,7 @@ export function createJoinTool(
       if (!code) return text("Error: 'code' parameter is required.");
 
       try {
-        const result = await resolveInviteCode(code, config, mqttClient, contacts, logger);
+        const result = await resolveInviteCode(code, config, mqttClient, contacts, logger, invitations);
         return text(result.message);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

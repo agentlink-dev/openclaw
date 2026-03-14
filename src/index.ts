@@ -3,6 +3,7 @@ import os from "node:os";
 import type { AgentLinkConfig } from "./types.js";
 import { resolveIdentity } from "./identity.js";
 import { createContacts } from "./contacts.js";
+import { createInvitationsStore } from "./invitations.js";
 import { createMqttService } from "./mqtt-service.js";
 import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool, createLogsTool, createDebugTool } from "./tools.js";
 import {
@@ -67,6 +68,7 @@ function resolveConfig(raw: Record<string, unknown>): AgentLinkConfig {
     agentId: identity.agent_id,
     humanName: identity.human_name,
     dataDir,
+    capabilities: identity.capabilities,
   };
 }
 
@@ -84,6 +86,7 @@ export default {
 function register(api: PluginApi) {
   const config = resolveConfig(api.pluginConfig ?? {});
   const contacts = createContacts(config.dataDir);
+  const invitations = createInvitationsStore(config.dataDir);
   const mqttService = createMqttService(config, api.logger);
   const mqttClient = mqttService.getClient();
   const a2aManager = createA2ASessionManager(api.logger);
@@ -132,7 +135,7 @@ function register(api: PluginApi) {
         );
         relayToMainSession(
           relayText, contactAgentId, contactName, config,
-          api.runtime.channel, api.config, api.logger,
+          api.runtime.channel, api.config, api.logger, ctx,
         ).catch((err) => {
           api.logger.warn(`[AgentLink] Failed to relay silence summary: ${err}`);
         });
@@ -155,18 +158,20 @@ function register(api: PluginApi) {
     t.status15 = setTimeout(() => {
       if (a2aManager.isPaused(contactAgentId) || !api.runtime?.channel) return;
       const prompt = formatStatusPrompt(contactAgentId, contactName, 1);
+      const originCtx = a2aManager.getOriginContext(contactAgentId);
       relayToMainSession(
         prompt, contactAgentId, contactName, config,
-        api.runtime.channel, api.config, api.logger,
+        api.runtime.channel, api.config, api.logger, originCtx,
       ).catch(() => {});
     }, 15_000);
 
     t.status45 = setTimeout(() => {
       if (a2aManager.isPaused(contactAgentId) || !api.runtime?.channel) return;
       const prompt = formatStatusPrompt(contactAgentId, contactName, 2);
+      const originCtx = a2aManager.getOriginContext(contactAgentId);
       relayToMainSession(
         prompt, contactAgentId, contactName, config,
-        api.runtime.channel, api.config, api.logger,
+        api.runtime.channel, api.config, api.logger, originCtx,
       ).catch(() => {});
     }, 45_000);
 
@@ -180,9 +185,10 @@ function register(api: PluginApi) {
         const relayText = formatConsolidatedSummaryPrompt(
           contactAgentId, contactName, count, log, "no_response",
         );
+        const originCtx = a2aManager.getOriginContext(contactAgentId);
         relayToMainSession(
           relayText, contactAgentId, contactName, config,
-          api.runtime.channel, api.config, api.logger,
+          api.runtime.channel, api.config, api.logger, originCtx,
         ).catch(() => {});
         clearContactTimers(contactAgentId);
       }
@@ -275,7 +281,7 @@ function register(api: PluginApi) {
                   api.logger.info(`[AgentLink] A2A with ${senderAgentId} completed — relaying to human`);
                   relayToMainSession(
                     relayText, senderAgentId, cName,
-                    config, api.runtime.channel, api.config, api.logger,
+                    config, api.runtime.channel, api.config, api.logger, originCtx,
                   ).catch((err) => {
                     api.logger.warn(`[AgentLink] Failed to relay completion summary: ${err}`);
                   });
@@ -289,9 +295,10 @@ function register(api: PluginApi) {
                 const relayText = formatConsolidatedSummaryPrompt(
                   senderAgentId, contact?.entry.human_name, count, log, "exchange_limit",
                 );
+                const originCtx = a2aManager.getOriginContext(senderAgentId);
                 relayToMainSession(
                   relayText, senderAgentId, contact?.entry.human_name,
-                  config, api.runtime.channel, api.config, api.logger,
+                  config, api.runtime.channel, api.config, api.logger, originCtx,
                 ).catch((err) => {
                   api.logger.warn(`[AgentLink] Failed to relay exchange limit summary: ${err}`);
                 });
@@ -301,6 +308,10 @@ function register(api: PluginApi) {
               api.logger.warn(`[AgentLink] Failed to dispatch to session: ${err}`);
             });
           },
+          mqttClient,
+          api.runtime?.channel,
+          api.config,
+          invitations,
         );
       });
 
@@ -314,7 +325,7 @@ function register(api: PluginApi) {
         const { code } = JSON.parse(pendingData);
         if (code) {
           api.logger.info(`[AgentLink] Processing pending invite code: ${code}`);
-          const result = await resolveInviteCode(code, config, mqttClient, contacts, api.logger);
+          const result = await resolveInviteCode(code, config, mqttClient, contacts, api.logger, invitations);
           api.logger.info(`[AgentLink] ${result.message}`);
           await fs.unlink(pendingJoinPath);
         }
@@ -334,8 +345,8 @@ function register(api: PluginApi) {
   // --- Tools ---
   api.registerTool(createMessageTool(config, mqttClient, contacts, api.logger, a2aManager, onA2AStarted));
   api.registerTool(createWhoisTool(config, mqttClient, contacts, api.logger));
-  api.registerTool(createInviteTool(config, mqttClient, api.logger));
-  api.registerTool(createJoinTool(config, mqttClient, contacts, api.logger));
+  api.registerTool(createInviteTool(config, mqttClient, api.logger, invitations));
+  api.registerTool(createJoinTool(config, mqttClient, contacts, api.logger, invitations));
   api.registerTool(createLogsTool(config, contacts, logWriter));
   api.registerTool(createDebugTool(config, api.logger));
 
@@ -376,6 +387,51 @@ function register(api: PluginApi) {
           });
 
         agentlink
+          .command("invites")
+          .description("View sent and received invitations")
+          .option("--sent", "Show only sent invitations")
+          .option("--received", "Show only received invitations")
+          .action((options: { sent?: boolean; received?: boolean }) => {
+            const history = invitations.getAll();
+            const showSent = !options.received || options.sent;
+            const showReceived = !options.sent || options.received;
+
+            if (showSent && history.sent.length > 0) {
+              console.log("Sent Invitations:\n");
+              for (const invite of history.sent) {
+                const toLabel = invite.to_name ? ` (to ${invite.to_name})` : "";
+                const statusLabel = invite.status === "accepted"
+                  ? `✓ Accepted by ${invite.accepted_by} on ${invite.accepted_at?.split("T")[0]}`
+                  : invite.status === "expired"
+                  ? "✗ Expired"
+                  : `⋯ Pending (expires ${invite.expires.split("T")[0]})`;
+                console.log(`  ${invite.code}${toLabel}`);
+                console.log(`    Created: ${invite.created.split("T")[0]}`);
+                console.log(`    Status: ${statusLabel}`);
+                console.log();
+              }
+            } else if (showSent) {
+              console.log("No sent invitations yet.\n");
+            }
+
+            if (showReceived && history.received.length > 0) {
+              console.log("Received Invitations:\n");
+              for (const invite of history.received) {
+                console.log(`  ${invite.code} from ${invite.from_human_name} (${invite.from_agent_id})`);
+                console.log(`    Received: ${invite.received_at.split("T")[0]}`);
+                console.log(`    Status: ${invite.accepted ? "✓ Accepted" : "⋯ Pending"}`);
+                console.log();
+              }
+            } else if (showReceived) {
+              console.log("No received invitations yet.\n");
+            }
+
+            if (history.sent.length === 0 && history.received.length === 0) {
+              console.log("No invitation history yet. Use agentlink_invite to generate an invite code.");
+            }
+          });
+
+        agentlink
           .command("join <code>")
           .description("Join AgentLink using an invite code")
           .action(async (code: string) => {
@@ -383,7 +439,7 @@ function register(api: PluginApi) {
               console.log("Not connected to broker. Start the gateway first.");
               return;
             }
-            const result = await resolveInviteCode(code, config, mqttClient, contacts, api.logger);
+            const result = await resolveInviteCode(code, config, mqttClient, contacts, api.logger, invitations);
             console.log(result.message);
           });
       },

@@ -2,6 +2,7 @@ import type { AgentLinkConfig, InvitePayload, AgentStatus } from "./types.js";
 import { TOPICS, createEnvelope, isInviteExpired } from "./types.js";
 import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
+import type { InvitationsStore } from "./invitations.js";
 
 /**
  * Resolve an invite code: subscribe to the invite topic, read the retained payload,
@@ -13,6 +14,7 @@ export async function resolveInviteCode(
   mqttClient: MqttClient,
   contacts: ContactsStore,
   logger: Logger,
+  invitations?: InvitationsStore,
 ): Promise<{ success: boolean; message: string }> {
   const topic = TOPICS.invite(code.toUpperCase());
 
@@ -55,8 +57,22 @@ export async function resolveInviteCode(
   contacts.add(contactName, invite.agent_id, invite.human_name);
   logger.info(`[AgentLink] Added contact from invite: ${invite.human_name} (${invite.agent_id})`);
 
+  // Track the received invite
+  if (invitations) {
+    invitations.addReceived(code.toUpperCase(), invite.agent_id, invite.human_name);
+  }
+
   // Send contact_exchange back to the inviter (bidirectional handshake)
-  const exchange = createEnvelope("contact_exchange", config.agentId, config.humanName, invite.agent_id);
+  const exchange = createEnvelope(
+    "contact_exchange",
+    config.agentId,
+    config.humanName,
+    invite.agent_id,
+    undefined, // text
+    undefined, // origin
+    undefined, // context
+    config.capabilities, // capabilities
+  );
   const inboxTopic = TOPICS.inbox(invite.agent_id, config.agentId);
 
   try {
@@ -65,6 +81,21 @@ export async function resolveInviteCode(
   } catch (err) {
     // Non-fatal: they added us but we failed to notify them
     logger.warn(`[AgentLink] Failed to send contact exchange: ${err}`);
+  }
+
+  // Wait for ack with 5-second timeout
+  logger.info(`[AgentLink] Waiting for ack from ${invite.agent_id}...`);
+  const ackReceived = await waitForContactExchangeAck(
+    mqttClient,
+    invite.agent_id,
+    config.agentId,
+    5000,
+  );
+
+  if (ackReceived) {
+    logger.info(`[AgentLink] Connection confirmed by ${invite.agent_id}`);
+  } else {
+    logger.warn(`[AgentLink] No ack received from ${invite.agent_id} (timeout)`);
   }
 
   // Send auto-hello message to close the feedback loop for the inviter
@@ -85,9 +116,13 @@ export async function resolveInviteCode(
     logger.warn(`[AgentLink] Failed to send auto-hello: ${err}`);
   }
 
+  const statusText = ackReceived
+    ? `Connected with ${invite.human_name}'s agent (${invite.agent_id}). Connection confirmed!`
+    : `Connected with ${invite.human_name}'s agent (${invite.agent_id}). You can now message them with agentlink_message.`;
+
   return {
     success: true,
-    message: `Connected with ${invite.human_name}'s agent (${invite.agent_id}). You can now message them with agentlink_message.`,
+    message: statusText,
   };
 }
 
@@ -126,6 +161,56 @@ function readRetained<T>(
         resolved = true;
         clearTimeout(timer);
         resolve(null);
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Helper: wait for contact_exchange ack with timeout
+// ---------------------------------------------------------------------------
+
+function waitForContactExchangeAck(
+  mqttClient: MqttClient,
+  expectedFrom: string,
+  myAgentId: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve(false);
+      }
+    }, timeoutMs);
+
+    const inboxTopic = TOPICS.inbox(myAgentId, expectedFrom);
+
+    mqttClient.onMessage((msgTopic, payload) => {
+      if (msgTopic === inboxTopic && !resolved) {
+        try {
+          const envelope = JSON.parse(payload.toString("utf-8"));
+          if (
+            envelope.type === "contact_exchange" &&
+            envelope.ack === true &&
+            envelope.from === expectedFrom
+          ) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve(true);
+          }
+        } catch {
+          // Invalid payload, ignore
+        }
+      }
+    });
+
+    mqttClient.subscribe(inboxTopic).catch(() => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        resolve(false);
       }
     });
   });
