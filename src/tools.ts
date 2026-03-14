@@ -1,4 +1,4 @@
-import type { AgentLinkConfig, AgentStatus } from "./types.js";
+import type { AgentLinkConfig, AgentStatus, OpenClawPluginToolFactory, OpenClawPluginToolContext, ToolDefinition } from "./types.js";
 import { createEnvelope, createInvitePayload, TOPICS } from "./types.js";
 import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
@@ -8,19 +8,11 @@ import type { InvitationsStore } from "./invitations.js";
 import { resolveInviteCode } from "./invite.js";
 
 // ---------------------------------------------------------------------------
-// OC Tool types (minimal interface matching OpenClaw's tool API)
+// Helper
 // ---------------------------------------------------------------------------
 
 interface ToolResult {
   content: Array<{ type: "text"; text: string }>;
-}
-
-interface ToolDefinition {
-  name: string;
-  label: string;
-  description: string;
-  parameters: unknown;
-  execute: (id: string, params: Record<string, unknown>) => Promise<ToolResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,107 +30,114 @@ export function createMessageTool(
   logger: Logger,
   a2aManager?: A2ASessionManager,
   onA2AStarted?: (agentId: string) => void,
-): ToolDefinition {
-  // Build dynamic description with current contacts
-  const all = contacts.getAll();
-  const contactEntries = Object.entries(all);
-  let description =
-    "Send a message to another agent via AgentLink. Use the contact's name or their agent ID. " +
-    "The message will be delivered to their agent, who will respond automatically. " +
-    "The conversation may continue for several exchanges autonomously.\n\n" +
-    "IMPORTANT: When you use this tool, briefly tell your human what you're doing and what " +
-    "you'll come back with BEFORE calling the tool. Example: \"Reaching out to Sarah's agent " +
-    "to check her availability. I'll come back with times that work for both of you.\"\n\n" +
-    "Do NOT mention tool names, agent IDs, MQTT, or AgentLink internals to the human.";
-  if (contactEntries.length > 0) {
-    const contactList = contactEntries
-      .map(([name, entry]) => {
-        const human = entry.human_name ? ` (${entry.human_name}'s agent)` : "";
-        return `  - "${name}"${human}`;
-      })
-      .join("\n");
-    description += `\n\nYour contacts:\n${contactList}`;
-  }
+): OpenClawPluginToolFactory {
+  // Return factory function that captures session context
+  return (ctx: OpenClawPluginToolContext) => {
+    // Capture session context from factory parameter
+    const sessionKey = ctx.sessionKey ?? "main";
+    const messageChannel = ctx.messageChannel ?? "webchat";
 
-  return {
-    name: "agentlink_message",
-    label: "AgentLink: Send Message",
-    description,
-    parameters: {
-      type: "object",
-      required: ["to", "text"],
-      properties: {
-        to: {
-          type: "string",
-          description: "Contact name or agent ID to send the message to",
-        },
-        text: {
-          type: "string",
-          description: "The message text to send",
-        },
-        context: {
-          type: "string",
-          enum: ["ask", "tell"],
-          description: "Optional message context. Use 'tell' for one-way updates/confirmations (no response expected). " +
-                       "Use 'ask' (or omit) when you need a response. Defaults to 'ask' if not specified.",
+    // Build dynamic description with current contacts
+    const all = contacts.getAll();
+    const contactEntries = Object.entries(all);
+    let description =
+      "Send a message to another agent via AgentLink. Use the contact's name or their agent ID. " +
+      "The message will be delivered to their agent, who will respond automatically. " +
+      "The conversation may continue for several exchanges autonomously.\n\n" +
+      "IMPORTANT: When you use this tool, briefly tell your human what you're doing and what " +
+      "you'll come back with BEFORE calling the tool. Example: \"Reaching out to Sarah's agent " +
+      "to check her availability. I'll come back with times that work for both of you.\"\n\n" +
+      "Do NOT mention tool names, agent IDs, MQTT, or AgentLink internals to the human.";
+    if (contactEntries.length > 0) {
+      const contactList = contactEntries
+        .map(([name, entry]) => {
+          const human = entry.human_name ? ` (${entry.human_name}'s agent)` : "";
+          return `  - "${name}"${human}`;
+        })
+        .join("\n");
+      description += `\n\nYour contacts:\n${contactList}`;
+    }
+
+    return {
+      name: "agentlink_message",
+      label: "AgentLink: Send Message",
+      description,
+      parameters: {
+        type: "object",
+        required: ["to", "text"],
+        properties: {
+          to: {
+            type: "string",
+            description: "Contact name or agent ID to send the message to",
+          },
+          text: {
+            type: "string",
+            description: "The message text to send",
+          },
+          context: {
+            type: "string",
+            enum: ["ask", "tell"],
+            description: "Optional message context. Use 'tell' for one-way updates/confirmations (no response expected). " +
+                         "Use 'ask' (or omit) when you need a response. Defaults to 'ask' if not specified.",
+          },
         },
       },
-    },
-    async execute(_id, params) {
-      const to = params.to as string;
-      const messageText = params.text as string;
-      const context = params.context as "ask" | "tell" | undefined;
+      async execute(_id, params) {
+        const to = params.to as string;
+        const messageText = params.text as string;
+        const context = params.context as "ask" | "tell" | undefined;
 
-      if (!to || !messageText) {
-        return text("Error: both 'to' and 'text' are required.");
-      }
-
-      // Resolve contact name to agent ID
-      const agentId = contacts.resolve(to);
-      if (!agentId) {
-        return text(
-          `I don't have "${to}" as a contact on AgentLink.\n\n` +
-          `To connect with them, you can:\n` +
-          `1. Use the agentlink_invite tool to generate an invite code to share with them\n` +
-          `2. Ask your human for their agent ID and add them as a contact`
-        );
-      }
-
-      // Reset exchange counter if conversation was paused — human is actively continuing
-      if (a2aManager?.isPaused(agentId)) {
-        a2aManager.reset(agentId);
-      }
-
-      // Build and send envelope — origin: "tool" tells receiver this is human-initiated
-      const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool", context);
-      const topic = TOPICS.inbox(agentId, config.agentId);
-
-      try {
-        await mqttClient.publish(topic, JSON.stringify(envelope));
-        const contact = contacts.findByAgentId(agentId);
-        const label = contact ? `${contact.name}'s agent (${agentId})` : agentId;
-        logger.info(`[AgentLink] Message sent to ${label}`);
-
-        // Stash origin context (which session the human is on) for relay
-        if (a2aManager) {
-          a2aManager.setOriginContext(agentId, {
-            sessionKey: "main",
-            channel: "webchat",
-            agentId: config.agentId,
-            timestamp: Date.now(),
-          });
+        if (!to || !messageText) {
+          return text("Error: both 'to' and 'text' are required.");
         }
-        onA2AStarted?.(agentId);
 
-        return text(
-          `Message sent to ${label}. The conversation will run autonomously — I'll relay the results when it's done.`
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`[AgentLink] Failed to send message: ${msg}`);
-        return text(`Failed to send message: ${msg}`);
-      }
-    },
+        // Resolve contact name to agent ID
+        const agentId = contacts.resolve(to);
+        if (!agentId) {
+          return text(
+            `I don't have "${to}" as a contact on AgentLink.\n\n` +
+            `To connect with them, you can:\n` +
+            `1. Use the agentlink_invite tool to generate an invite code to share with them\n` +
+            `2. Ask your human for their agent ID and add them as a contact`
+          );
+        }
+
+        // Reset exchange counter if conversation was paused — human is actively continuing
+        if (a2aManager?.isPaused(agentId)) {
+          a2aManager.reset(agentId);
+        }
+
+        // Build and send envelope — origin: "tool" tells receiver this is human-initiated
+        const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool", context);
+        const topic = TOPICS.inbox(agentId, config.agentId);
+
+        try {
+          await mqttClient.publish(topic, JSON.stringify(envelope));
+          const contact = contacts.findByAgentId(agentId);
+          const label = contact ? `${contact.name}'s agent (${agentId})` : agentId;
+          logger.info(`[AgentLink] Message sent to ${label}`);
+
+          // Stash origin context (captured from session) for relay
+          if (a2aManager) {
+            a2aManager.setOriginContext(agentId, {
+              sessionKey,           // ✓ From factory context closure
+              channel: messageChannel,  // ✓ From factory context closure
+              agentId: config.agentId,
+              timestamp: Date.now(),
+            });
+          }
+          onA2AStarted?.(agentId);
+
+          return text(
+            `Message sent to ${label}. The conversation will run autonomously — I'll relay the results when it's done.`
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error(`[AgentLink] Failed to send message: ${msg}`);
+          return text(`Failed to send message: ${msg}`);
+        }
+      },
+    };
   };
 }
 
@@ -186,11 +185,12 @@ export function createWhoisTool(
         }
 
         const localContact = contacts.findByAgentId(agentId);
+        const lastSeen = status.timestamp ? new Date(status.timestamp).toLocaleString() : "Unknown";
         const lines = [
           `Agent: ${status.agent_id}`,
           `Human: ${status.human_name}`,
           `Status: ${status.online ? "Online" : "Offline"}`,
-          `Last seen: ${status.last_seen}`,
+          `Last seen: ${lastSeen}`,
         ];
         if (localContact) {
           lines.push(`Your contact name: ${localContact.name}`);
@@ -219,86 +219,92 @@ export function createInviteTool(
   mqttClient: MqttClient,
   logger: Logger,
   invitations?: InvitationsStore,
-): ToolDefinition {
-  return {
-    name: "agentlink_invite",
-    label: "AgentLink: Generate Invite",
-    description:
-      "Generate a 6-character invite code that someone can use to connect their agent to yours. " +
-      "IMPORTANT: Show the tool output exactly as-is — it includes a formatted message the user can copy/paste to share. " +
-      "DO NOT summarize or paraphrase it. The formatted output is designed to be sent via WhatsApp, email, or text.",
-    parameters: {
-      type: "object",
-      required: [],
-      properties: {
-        name: {
-          type: "string",
-          description: "Optional: the name of the person you're inviting (for your reference)",
+): OpenClawPluginToolFactory {
+  // Return factory function (session context available if needed for future features)
+  return (ctx: OpenClawPluginToolContext) => {
+    const sessionKey = ctx.sessionKey ?? "main";
+    const messageChannel = ctx.messageChannel ?? "webchat";
+
+    return {
+      name: "agentlink_invite",
+      label: "AgentLink: Generate Invite",
+      description:
+        "Generate a 6-character invite code that someone can use to connect their agent to yours. " +
+        "IMPORTANT: Show the tool output exactly as-is — it includes a formatted message the user can copy/paste to share. " +
+        "DO NOT summarize or paraphrase it. The formatted output is designed to be sent via WhatsApp, email, or text.",
+      parameters: {
+        type: "object",
+        required: [],
+        properties: {
+          name: {
+            type: "string",
+            description: "Optional: the name of the person you're inviting (for your reference)",
+          },
         },
       },
-    },
-    async execute(_id, params) {
-      const inviteName = params.name as string | undefined;
+      async execute(_id, params) {
+        const inviteName = params.name as string | undefined;
 
-      const invite = createInvitePayload(config.agentId, config.humanName);
-      const topic = TOPICS.invite(invite.code);
+        const invite = createInvitePayload(config.agentId, config.humanName);
+        const topic = TOPICS.invite(invite.code);
 
-      try {
-        await mqttClient.publish(topic, JSON.stringify(invite), { retain: true, qos: 1 });
-        logger.info(`[AgentLink] Invite code generated: ${invite.code}`);
+        try {
+          await mqttClient.publish(topic, JSON.stringify(invite), { retain: true, qos: 1 });
+          logger.info(`[AgentLink] Invite code generated: ${invite.code} from ${messageChannel}:${sessionKey}`);
 
-        // Track the sent invite
-        if (invitations) {
-          invitations.addSent(invite.code, inviteName, invite.expires);
+          // Track the sent invite
+          if (invitations) {
+            invitations.addSent(invite.code, inviteName, invite.expires);
+          }
+
+          // Construct landing page URL (configurable, defaults to Vercel deployment)
+          // Use .txt extension for reliable plain text delivery to LLMs
+          const landingPageBase = config.landingPageUrl || "https://website-agentlink.vercel.app";
+          const inviteUrl = `${landingPageBase}/join/${invite.code}.txt`;
+
+          // Detect sender/recipient names
+          const senderName = config.humanName || "sender";
+          const recipientName = inviteName || "recipient";
+
+          // Installation message for the recipient to paste into their OpenClaw
+          const installMessage = [
+            `Hi OpenClaw, I would like to install AgentLink. It allows you, my agent, to talk to other OpenClaws — so you can schedule stuff, share context, and coordinate without us going back and forth.`,
+            ``,
+            `AgentLink is a peer-to-peer messaging plugin (like WhatsApp for AI agents).`,
+            `No credentials shared. Messages are direct over MQTT.`,
+            ``,
+            `Get started: ${inviteUrl}`,
+            `(Takes 30 seconds)`,
+          ].join("\n");
+
+          const lines = [
+            `Here's your AgentLink invite for **${recipientName}**.`,
+            ``,
+            `───────────────────────────────────────────`,
+            ``,
+            `**Instructions for ${senderName}:** Please send the whole message below to ${recipientName}.`,
+            ``,
+            `───────────────────────────────────────────`,
+            ``,
+            `**Instructions for ${recipientName}:** Please paste the installation message below in your OpenClaw.`,
+            ``,
+            `───────────────────────────────────────────`,
+            ``,
+            installMessage,
+            ``,
+            `───────────────────────────────────────────`,
+            ``,
+            `**Invite code: ${invite.code}** (expires ${new Date(invite.expires).toLocaleDateString()})`,
+          ];
+
+          return text(lines.join("\n"));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error(`[AgentLink] Failed to publish invite: ${msg}`);
+          return text(`Failed to generate invite: ${msg}`);
         }
-
-        // Construct landing page URL (configurable, defaults to Vercel deployment)
-        // Use .txt extension for reliable plain text delivery to LLMs
-        const landingPageBase = config.landingPageUrl || "https://website-agentlink.vercel.app";
-        const inviteUrl = `${landingPageBase}/join/${invite.code}.txt`;
-
-        // Detect sender/recipient names
-        const senderName = config.humanName || "sender";
-        const recipientName = inviteName || "recipient";
-
-        // Installation message for the recipient to paste into their OpenClaw
-        const installMessage = [
-          `Hi OpenClaw, I would like to install AgentLink. It allows you, my agent, to talk to other OpenClaws — so you can schedule stuff, share context, and coordinate without us going back and forth.`,
-          ``,
-          `AgentLink is a peer-to-peer messaging plugin (like WhatsApp for AI agents).`,
-          `No credentials shared. Messages are direct over MQTT.`,
-          ``,
-          `Get started: ${inviteUrl}`,
-          `(Takes 30 seconds)`,
-        ].join("\n");
-
-        const lines = [
-          `Here's your AgentLink invite for **${recipientName}**.`,
-          ``,
-          `───────────────────────────────────────────`,
-          ``,
-          `**Instructions for ${senderName}:** Please send the whole message below to ${recipientName}.`,
-          ``,
-          `───────────────────────────────────────────`,
-          ``,
-          `**Instructions for ${recipientName}:** Please paste the installation message below in your OpenClaw.`,
-          ``,
-          `───────────────────────────────────────────`,
-          ``,
-          installMessage,
-          ``,
-          `───────────────────────────────────────────`,
-          ``,
-          `**Invite code: ${invite.code}** (expires ${new Date(invite.expires).toLocaleDateString()})`,
-        ];
-
-        return text(lines.join("\n"));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`[AgentLink] Failed to publish invite: ${msg}`);
-        return text(`Failed to generate invite: ${msg}`);
-      }
-    },
+      },
+    };
   };
 }
 

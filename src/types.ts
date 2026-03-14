@@ -48,8 +48,8 @@ export const TOPICS = {
 
 /** Extract sender ID from an inbox topic */
 export function parseSenderFromTopic(topic: string): string | null {
-  const match = topic.match(/^agentlink\/agents\/[^/]+\/from\/(.+)$/);
-  return match ? match[1] : null;
+  const match = topic.match(/^agentlink\/agents\/([^/]+)\/from\/([^/]+)$/);
+  return match ? match[2] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -58,37 +58,17 @@ export function parseSenderFromTopic(topic: string): string | null {
 
 export type MessageType = "message" | "contact_exchange";
 
-export type MessageOrigin = "tool" | "auto";
-
-/**
- * Message context: semantic hint about the message's purpose
- * - "ask": Question expecting an answer
- * - "tell": Statement/update, no response needed
- */
-export type MessageContext = "ask" | "tell";
-
-export const MESSAGE_CONTEXTS = {
-  ASK: "ask",
-  TELL: "tell",
-} as const;
-
-export function isValidContext(ctx: string): ctx is MessageContext {
-  return ctx === "ask" || ctx === "tell";
-}
-
 export interface MessageEnvelope {
-  version: 1;
   type: MessageType;
   from: string;
   from_name: string;
   to: string;
-  text?: string;
-  origin?: MessageOrigin;
-  context?: MessageContext;  // Optional: defaults to "ask"
-  capabilities?: string[];  // Optional: agent's capabilities
-  ack?: boolean;  // Acknowledgment flag for contact_exchange
-  ts: string;
-  message_id: string;
+  text?: string; // Message body
+  capabilities?: string[]; // Agent capabilities (for contact_exchange)
+  origin?: "tool" | "auto"; // Differentiate human-initiated vs auto-respond
+  context?: "ask" | "tell"; // Message context: 'ask' = expect response, 'tell' = one-way
+  ack?: boolean; // Contact exchange acknowledgment
+  timestamp: number;
 }
 
 export function createEnvelope(
@@ -97,12 +77,11 @@ export function createEnvelope(
   fromName: string,
   to: string,
   text?: string,
-  origin?: MessageOrigin,
-  context?: MessageContext,
+  origin?: "tool" | "auto",
+  context?: "ask" | "tell",
   capabilities?: string[],
 ): MessageEnvelope {
   return {
-    version: 1,
     type,
     from,
     from_name: fromName,
@@ -111,67 +90,57 @@ export function createEnvelope(
     origin,
     context,
     capabilities,
-    ts: new Date().toISOString(),
-    message_id: uuid(),
+    timestamp: Date.now(),
   };
 }
 
-export function parseEnvelope(raw: string): MessageEnvelope | null {
+export function parseEnvelope(payload: string): MessageEnvelope | null {
   try {
-    const obj = JSON.parse(raw);
-    if (obj.version !== 1) return null;
-    if (!obj.type || !obj.from || !obj.to || !obj.message_id) return null;
-    return obj as MessageEnvelope;
+    const data = JSON.parse(payload);
+    if (!data.type || !data.from || !data.to) return null;
+    return data as MessageEnvelope;
   } catch {
     return null;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Status payload (retained on status topic)
+// Agent Status
 // ---------------------------------------------------------------------------
 
 export interface AgentStatus {
   agent_id: string;
   human_name: string;
   online: boolean;
-  last_seen: string;
+  timestamp: number;
 }
 
-export function createStatusPayload(agentId: string, humanName: string, online: boolean): AgentStatus {
-  return {
-    agent_id: agentId,
-    human_name: humanName,
-    online,
-    last_seen: new Date().toISOString(),
-  };
+export function createStatusPayload(
+  agentId: string,
+  humanName: string,
+  online: boolean,
+): AgentStatus {
+  return { agent_id: agentId, human_name: humanName, online, timestamp: Date.now() };
 }
 
 // ---------------------------------------------------------------------------
-// Invite payload (retained on invite topic)
+// Invite Payload
 // ---------------------------------------------------------------------------
 
 export interface InvitePayload {
   code: string;
   agent_id: string;
   human_name: string;
-  created: string;
-  expires: string;
+  created: string; // ISO 8601
+  expires: string; // ISO 8601
 }
 
-const INVITE_CODE_LENGTH = 6;
-const INVITE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/O/0/1 for readability
-const INVITE_EXPIRY_DAYS = 7;
-
-export function generateInviteCode(): string {
-  return Array.from({ length: INVITE_CODE_LENGTH }, () =>
-    INVITE_CHARSET[Math.floor(Math.random() * INVITE_CHARSET.length)]
-  ).join("");
-}
-
-export function createInvitePayload(agentId: string, humanName: string): InvitePayload {
+export function createInvitePayload(
+  agentId: string,
+  humanName: string,
+): InvitePayload {
   const now = new Date();
-  const expires = new Date(now.getTime() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+  const expires = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
   return {
     code: generateInviteCode(),
     agent_id: agentId,
@@ -182,7 +151,23 @@ export function createInvitePayload(agentId: string, humanName: string): InviteP
 }
 
 export function isInviteExpired(invite: InvitePayload): boolean {
-  return new Date(invite.expires).getTime() < Date.now();
+  return new Date(invite.expires) < new Date();
+}
+
+function generateInviteCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No confusing chars (0,O,I,1)
+  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+}
+
+// ---------------------------------------------------------------------------
+// Origin Context (for relay routing)
+// ---------------------------------------------------------------------------
+
+export interface OriginContext {
+  sessionKey: string;
+  channel: string;
+  agentId: string;
+  timestamp: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,3 +184,35 @@ export interface AgentLinkConfig {
   landingPageUrl?: string; // Base URL for invite landing page (default: https://website-agentlink.vercel.app)
   capabilities?: string[]; // Agent's capabilities (plugins, skills, tools)
 }
+
+// ---------------------------------------------------------------------------
+// OpenClaw Plugin API Types
+// ---------------------------------------------------------------------------
+
+export type OpenClawPluginToolContext = {
+  config?: unknown;
+  workspaceDir?: string;
+  agentDir?: string;
+  agentId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  messageChannel?: string;
+  agentAccountId?: string;
+  requesterSenderId?: string;
+  senderIsOwner?: boolean;
+  sandboxed?: boolean;
+};
+
+export type ToolDefinition = {
+  name: string;
+  label: string;
+  description: string;
+  parameters: unknown;
+  execute: (id: string, params: Record<string, unknown>) => Promise<{
+    content: Array<{ type: "text"; text: string }>;
+  }>;
+};
+
+export type OpenClawPluginToolFactory = (
+  ctx: OpenClawPluginToolContext
+) => ToolDefinition | ToolDefinition[] | null | undefined;

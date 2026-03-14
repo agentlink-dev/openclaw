@@ -1,6 +1,6 @@
 import path from "node:path";
 import os from "node:os";
-import type { AgentLinkConfig } from "./types.js";
+import type { AgentLinkConfig, ToolDefinition, OpenClawPluginToolFactory } from "./types.js";
 import { resolveIdentity } from "./identity.js";
 import { createContacts } from "./contacts.js";
 import { createInvitationsStore } from "./invitations.js";
@@ -32,15 +32,7 @@ interface PluginApi {
     start: () => Promise<void>;
     stop: () => Promise<void>;
   }): void;
-  registerTool(tool: {
-    name: string;
-    label: string;
-    description: string;
-    parameters: unknown;
-    execute: (id: string, params: Record<string, unknown>) => Promise<{
-      content: Array<{ type: "text"; text: string }>;
-    }>;
-  }): void;
+  registerTool(tool: ToolDefinition | OpenClawPluginToolFactory): void;
   registerChannel?(registration: { plugin: unknown }): void;
   registerCli?(registrar: (ctx: { program: unknown }) => void, opts?: { commands?: string[] }): void;
   runtime?: {
