@@ -533,6 +533,19 @@ export function handleIncomingEnvelope(
       // This is an acknowledgment — log confirmation and notify human
       logger.info(`[AgentLink] Connection confirmed with ${envelope.from_name} (${envelope.from})`);
 
+      // Update contact with capabilities from ack if available
+      const existingContact = contacts.findByAgentId(envelope.from);
+      if (existingContact && envelope.capabilities && envelope.capabilities.length > 0) {
+        // Update the existing contact with capabilities
+        contacts.add(
+          existingContact.name,
+          envelope.from,
+          envelope.from_name,
+          envelope.capabilities
+        );
+        logger.info(`[AgentLink] Updated ${envelope.from} with ${envelope.capabilities.length} capabilities`);
+      }
+
       // Inject notification to main session
       if (channelApi && ocConfig) {
         const notificationText = `[AgentLink] Connection confirmed! ${envelope.from_name}'s agent (${envelope.from}) received your contact exchange.`;
