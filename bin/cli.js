@@ -1933,6 +1933,8 @@ async function searchEmail(email, timeoutMs) {
       console.log(pc.yellow("\n  ✗ Agent not found"));
       console.log(pc.dim(`  The email ${email} is not published for discovery.`));
       console.log(pc.dim(`\n  They may need to run: agentlink publish ${email}\n`));
+      await mqttClient.end();
+      process.exit(1);  // Exit with error code when not found
     }
   } catch (err) {
     spinner2.fail("Search failed");

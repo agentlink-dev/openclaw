@@ -129,13 +129,13 @@ describe("MQTT Discovery Protocol", () => {
     expect(duration).toBeLessThan(1500);
   }, TIMEOUT);
 
-  it("different searchers get different hashes (privacy)", async () => {
+  it("cross-user discovery works (public directory)", async () => {
     const publisher = "5HueCGU8rMjxEXxiPuD5BDk";
-    const searcher1 = publisher; // Same user can find
-    const searcher2 = "7pq2KXW9vRnCzYmEHfTaUDx"; // Different user cannot
-    const testEmail = `privacy-${uuid().slice(0, 8)}@example.com`;
+    const searcher1 = publisher; // Same user
+    const searcher2 = "7pq2KXW9vRnCzYmEHfTaUDx"; // Different user
+    const testEmail = `public-${uuid().slice(0, 8)}@example.com`;
 
-    // Publisher publishes with their own salt
+    // Publisher publishes
     await publishDiscoveryRecord(testEmail, publisher, mqttClient);
     await new Promise(resolve => setTimeout(resolve, 300));
 
@@ -151,13 +151,14 @@ describe("MQTT Discovery Protocol", () => {
     // Wait between searches
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    // Searcher 2 (different user) cannot find it (different hash)
+    // Searcher 2 (different user) CAN find it (v1: global salt = public directory)
     const result2 = await searchByIdentifier(
-      { identifier: testEmail, timeoutMs: 1000 },
+      { identifier: testEmail },
       searcher2,
       mqttClient
     );
-    expect(result2.found).toBe(false); // Different personal salt = different hash
+    expect(result2.found).toBe(true); // v1: Same hash for all users
+    expect(result2.agentId).toBe(publisher); // Found the publisher
 
     // Cleanup
     await unpublishDiscoveryRecord(testEmail, publisher, mqttClient);
@@ -208,38 +209,29 @@ describe("MQTT Discovery Protocol", () => {
     await unpublishDiscoveryRecord(phoneWithFormatting, agentId, mqttClient);
   }, TIMEOUT);
 
-  it("allows same identifier for multiple agents with different salts", async () => {
+  it("last publish wins when multiple agents share identifier", async () => {
     const agent1 = "5HueCGU8rMjxEXxiPuD5BDk";
     const agent2 = "7pq2KXW9vRnCzYmEHfTaUDx";
     const sharedEmail = `shared-${uuid().slice(0, 8)}@example.com`;
 
-    // Both agents can publish the same email (different hashes)
+    // Agent1 publishes first
     await publishDiscoveryRecord(sharedEmail, agent1, mqttClient);
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    // Agent2 publishes same email (overwrites - same hash/topic in v1)
     await publishDiscoveryRecord(sharedEmail, agent2, mqttClient);
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    // Each agent can find their own record
-    const result1 = await searchByIdentifier(
+    // Search finds agent2 (last one to publish)
+    const result = await searchByIdentifier(
       { identifier: sharedEmail },
-      agent1,
+      agent1,  // Any searcher
       mqttClient
     );
-    expect(result1.found).toBe(true);
-    expect(result1.agentId).toBe(agent1);
-
-    // Wait between searches
-    await new Promise(resolve => setTimeout(resolve, 300));
-
-    const result2 = await searchByIdentifier(
-      { identifier: sharedEmail },
-      agent2,
-      mqttClient
-    );
-    expect(result2.found).toBe(true);
-    expect(result2.agentId).toBe(agent2);
+    expect(result.found).toBe(true);
+    expect(result.agentId).toBe(agent2); // Last publisher wins
 
     // Cleanup
-    await unpublishDiscoveryRecord(sharedEmail, agent1, mqttClient);
     await unpublishDiscoveryRecord(sharedEmail, agent2, mqttClient);
   }, TIMEOUT + 5000);
 

@@ -55,11 +55,12 @@ describe("hashIdentifier", () => {
     expect(hash1).toBe(hash2);
   });
 
-  it("generates different hashes for different searchers", async () => {
+  it("generates same hash for all users (public directory)", async () => {
     const hash1 = await hashIdentifier("alice@example.com", "5HueCGU8rMjxEXxiPuD5BDk");
     const hash2 = await hashIdentifier("alice@example.com", "7pq2KXW9vRnCzYmEHfTaUDx");
 
-    expect(hash1).not.toBe(hash2);
+    // v1: Global salt only, same hash for everyone (enables blind discovery)
+    expect(hash1).toBe(hash2);
   });
 
   it("normalizes identifiers before hashing", async () => {
@@ -136,23 +137,23 @@ describe("extractShortHash", () => {
   });
 });
 
-describe("Integration: Hash Privacy", () => {
-  it("verifies personal salt isolation between users", async () => {
+describe("Integration: Hash Consistency", () => {
+  it("verifies same hash across all users (public directory)", async () => {
     const user1 = "5HueCGU8rMjxEXxiPuD5BDk";
     const user2 = "7pq2KXW9vRnCzYmEHfTaUDx";
     const identifier = "alice@example.com";
 
-    // Each user hashes the same identifier
+    // v1: Global salt only, all users hash to same value
     const hash1 = await hashIdentifier(identifier, user1);
     const hash2 = await hashIdentifier(identifier, user2);
 
-    // Hashes should be completely different
-    expect(hash1).not.toBe(hash2);
+    // Hashes should be identical (enables blind discovery)
+    expect(hash1).toBe(hash2);
 
-    // Short hashes should also be different
+    // Short hashes should also be identical
     const short1 = extractShortHash(hash1);
     const short2 = extractShortHash(hash2);
-    expect(short1).not.toBe(short2);
+    expect(short1).toBe(short2);
   });
 
   it("verifies global salt affects all hashes", async () => {

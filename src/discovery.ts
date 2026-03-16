@@ -15,8 +15,13 @@ export const DEFAULT_GLOBAL_SALT = "agentlink-discovery-v2-2026";
 /**
  * Derive a personal salt from an agent ID.
  *
- * Personal salts ensure that each user's hashes are unique,
- * preventing rainbow table attacks and cross-user correlation.
+ * @deprecated NO LONGER USED - Removed to enable public directory discovery.
+ *
+ * Previous behavior: Personal salts made each user's hashes unique,
+ * preventing cross-user discovery. This was changed to use global salt
+ * only, allowing anyone to find published emails/phones.
+ *
+ * Kept for backward compatibility and potential future private mode.
  *
  * Algorithm: SHA256(agentId + globalSalt)
  * Output: 64-character hex string (256 bits)
@@ -38,16 +43,21 @@ export function derivePersonalSalt(
 /**
  * Hash an identifier (email or phone) for privacy-preserving discovery.
  *
- * Algorithm: Argon2id with personal salt
+ * Algorithm: Argon2id with GLOBAL salt only (no personal salts)
  * - Time cost: 3 iterations
  * - Memory cost: 64 MB
  * - Parallelism: 4 threads
  *
- * This is memory-hard and prevents rainbow table attacks.
- * Each user's personal salt makes their hashes unique.
+ * This enables PUBLIC DIRECTORY functionality:
+ * - Same identifier hashes to same value for all users
+ * - Anyone can find published emails/phones
+ * - Still memory-hard (prevents rainbow tables)
+ *
+ * Security: Argon2id (64MB) makes rainbow tables expensive (~$50K for top 1M emails).
+ * Future v2: Add rate limiting or increase memory cost if needed.
  *
  * @param identifier - Email or phone number (normalized)
- * @param agentId - Searcher's agent ID (for personal salt)
+ * @param agentId - UNUSED (kept for API compatibility)
  * @param globalSalt - Global salt (default: DEFAULT_GLOBAL_SALT)
  * @returns Hash string (Argon2id format)
  */
@@ -59,12 +69,12 @@ export async function hashIdentifier(
   // Normalize identifier (lowercase email, strip phone formatting)
   const normalized = normalizeIdentifier(identifier);
 
-  // Derive personal salt from agent ID
-  const personalSalt = derivePersonalSalt(agentId, globalSalt);
-
-  // Use personal salt as the argon2 salt (take first 16 bytes of hex string)
-  // This ensures each agent ID gets a unique salt
-  const saltBuffer = Buffer.from(personalSalt.slice(0, 32), "hex"); // 16 bytes from hex
+  // Use ONLY global salt (no personal salt)
+  // This allows cross-user discovery to work
+  const saltBuffer = Buffer.from(
+    globalSalt.slice(0, 32).padEnd(32, "0"),
+    "utf8"
+  ).slice(0, 16); // 16 bytes
 
   // Argon2id hash
   const hash = await argon2.hash(normalized, {
@@ -161,6 +171,9 @@ export interface DiscoveryResponse {
  *
  * This allows other agents to find you by your email/phone.
  *
+ * PUBLIC DIRECTORY: Uses global salt only, so anyone searching for
+ * this identifier will find your agent ID.
+ *
  * @param identifier - Your email or phone
  * @param myAgentId - Your agent ID
  * @param mqttClient - Connected MQTT client
@@ -172,7 +185,7 @@ export async function publishDiscoveryRecord(
   mqttClient: MqttClientType,
   globalSalt: string = DEFAULT_GLOBAL_SALT
 ): Promise<void> {
-  // Hash the identifier with personal salt
+  // Hash the identifier with global salt (enables cross-user discovery)
   const fullHash = await hashIdentifier(identifier, myAgentId, globalSalt);
   const shortHash = extractShortHash(fullHash);
 
@@ -236,14 +249,17 @@ export async function unpublishDiscoveryRecord(
 /**
  * Search for an agent by email or phone using MQTT-only discovery.
  *
+ * PUBLIC DIRECTORY: Uses global salt only, so you can find any agent
+ * who has published this identifier.
+ *
  * Flow:
- * 1. Hash the identifier with searcher's personal salt
+ * 1. Hash the identifier with global salt (same hash for all users)
  * 2. Subscribe to agentlink/discovery/v2/{hash}
  * 3. Wait for retained message (or timeout)
  * 4. Unsubscribe and return result
  *
  * @param query - Discovery query parameters
- * @param myAgentId - Searcher's agent ID (for personal salt)
+ * @param myAgentId - Searcher's agent ID (UNUSED, kept for API compatibility)
  * @param mqttClient - Connected MQTT client
  * @param globalSalt - Global salt (default: DEFAULT_GLOBAL_SALT)
  * @returns Discovery response
