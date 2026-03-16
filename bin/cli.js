@@ -17,6 +17,8 @@ import pc from "picocolors";
 import ora from "ora";
 import { WebSocket } from "ws";
 import mqtt from "mqtt";
+import { generateAgentIdV2, isValidAgentIdV2 } from "../dist/src/types-v2.js";
+import { publishDiscoveryRecord, unpublishDiscoveryRecord, searchByIdentifier } from "../dist/src/discovery.js";
 
 // Respect OpenClaw environment variables (set by Railway/Docker, not by homebrew)
 const OPENCLAW_STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
@@ -1755,6 +1757,249 @@ This export contains:
   console.log(pc.dim("  Review README.md inside the archive for details.\n"));
 }
 
+// --- High-Entropy Discovery Commands ---
+
+/**
+ * Initialize AgentLink identity with v2 high-entropy agent ID
+ */
+async function initIdentity() {
+  console.log("\n" + pc.bold("  AgentLink Identity") + "\n");
+
+  // Check if identity already exists
+  if (fs.existsSync(IDENTITY_FILE)) {
+    try {
+      const identity = JSON.parse(fs.readFileSync(IDENTITY_FILE, "utf-8"));
+      console.log(pc.yellow("  ⚠ Identity already exists"));
+      console.log(pc.dim(`  Agent ID: ${identity.agent_id}`));
+      console.log(pc.dim(`  Human Name: ${identity.human_name}`));
+      console.log(pc.dim(`  Agent Name: ${identity.agent_name || "N/A"}`));
+      console.log(pc.dim(`\n  To reset, run: agentlink reset\n`));
+      return;
+    } catch {
+      // Fall through to create new identity
+    }
+  }
+
+  // Get display name
+  const nameIdx = args.indexOf("--name");
+  let humanName = nameIdx >= 0 ? args[nameIdx + 1] : null;
+
+  if (!humanName) {
+    humanName = os.userInfo().username || "Agent";
+  }
+
+  // Generate v2 agent ID
+  const spinner = ora("Generating high-entropy agent ID...").start();
+  const agentId = generateAgentIdV2();
+
+  if (!isValidAgentIdV2(agentId)) {
+    spinner.fail("Failed to generate valid agent ID");
+    console.error(pc.red("  Error: Generated ID validation failed\n"));
+    process.exit(1);
+  }
+
+  spinner.succeed("Agent ID generated");
+
+  // Create identity
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const identity = {
+    agent_id: agentId,
+    human_name: humanName,
+    agent_name: humanName, // Use human name as agent name by default
+  };
+
+  fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2) + "\n");
+
+  console.log(pc.green("  ✓ AgentLink identity created"));
+  console.log(pc.dim(`  Agent ID: ${agentId}`));
+  console.log(pc.dim(`  Display Name: ${humanName}`));
+  console.log(pc.dim(`\n  Your agent ID is stored in ~/.agentlink/identity.json`));
+  console.log(pc.dim(`  Share your agent ID with others to connect.\n`));
+}
+
+/**
+ * Publish discovery record to MQTT
+ */
+async function publishEmail(email) {
+  console.log("\n" + pc.bold("  Publish Discovery Record") + "\n");
+
+  // Load identity
+  if (!fs.existsSync(IDENTITY_FILE)) {
+    console.error(pc.red("  ✗ No identity found"));
+    console.log(pc.dim("  Run: agentlink init\n"));
+    process.exit(1);
+  }
+
+  const identity = JSON.parse(fs.readFileSync(IDENTITY_FILE, "utf-8"));
+  if (!identity.agent_id) {
+    console.error(pc.red("  ✗ Invalid identity file\n"));
+    process.exit(1);
+  }
+
+  // Connect to MQTT
+  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.hivemq.com";
+  const spinner = ora(`Connecting to MQTT broker...`).start();
+
+  let mqttClient;
+  try {
+    mqttClient = await mqtt.connectAsync(brokerUrl, {
+      clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
+      clean: true,
+      connectTimeout: 10000,
+    });
+    spinner.succeed("Connected to MQTT broker");
+  } catch (err) {
+    spinner.fail("Failed to connect to MQTT broker");
+    console.error(pc.red(`  Error: ${err.message}\n`));
+    process.exit(1);
+  }
+
+  // Publish discovery record
+  const spinner2 = ora(`Publishing discovery record for ${email}...`).start();
+  try {
+    await publishDiscoveryRecord(email, identity.agent_id, mqttClient);
+    spinner2.succeed("Discovery record published");
+
+    console.log(pc.green("\n  ✓ Published successfully"));
+    console.log(pc.dim(`  Email: ${email}`));
+    console.log(pc.dim(`  Agent ID: ${identity.agent_id}`));
+    console.log(pc.dim(`\n  Others can now find you by searching:`));
+    console.log(pc.cyan(`  agentlink search ${email}\n`));
+  } catch (err) {
+    spinner2.fail("Failed to publish");
+    console.error(pc.red(`  Error: ${err.message}\n`));
+    await mqttClient.end();
+    process.exit(1);
+  }
+
+  await mqttClient.end();
+}
+
+/**
+ * Search for an agent by email
+ */
+async function searchEmail(email, timeoutMs) {
+  console.log("\n" + pc.bold("  Search for Agent") + "\n");
+
+  // Load identity
+  if (!fs.existsSync(IDENTITY_FILE)) {
+    console.error(pc.red("  ✗ No identity found"));
+    console.log(pc.dim("  Run: agentlink init\n"));
+    process.exit(1);
+  }
+
+  const identity = JSON.parse(fs.readFileSync(IDENTITY_FILE, "utf-8"));
+  if (!identity.agent_id) {
+    console.error(pc.red("  ✗ Invalid identity file\n"));
+    process.exit(1);
+  }
+
+  // Connect to MQTT
+  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.hivemq.com";
+  const spinner = ora(`Connecting to MQTT broker...`).start();
+
+  let mqttClient;
+  try {
+    mqttClient = await mqtt.connectAsync(brokerUrl, {
+      clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
+      clean: true,
+      connectTimeout: 10000,
+    });
+    spinner.succeed("Connected to MQTT broker");
+  } catch (err) {
+    spinner.fail("Failed to connect to MQTT broker");
+    console.error(pc.red(`  Error: ${err.message}\n`));
+    process.exit(1);
+  }
+
+  // Search
+  const spinner2 = ora(`Searching for ${email}... (timeout: ${timeoutMs}ms)`).start();
+  try {
+    const result = await searchByIdentifier(
+      { identifier: email, timeoutMs },
+      identity.agent_id,
+      mqttClient
+    );
+
+    if (result.found) {
+      spinner2.succeed("Agent found");
+      console.log(pc.green("\n  ✓ Agent found"));
+      console.log(pc.dim(`  Email: ${email}`));
+      console.log(pc.dim(`  Agent ID: ${result.agentId}`));
+      console.log(pc.dim(`\n  To send a message, use the AgentLink plugin in OpenClaw:`));
+      console.log(pc.cyan(`  "Send a message to ${result.agentId}"\n`));
+    } else {
+      spinner2.fail("Agent not found");
+      console.log(pc.yellow("\n  ✗ Agent not found"));
+      console.log(pc.dim(`  The email ${email} is not published for discovery.`));
+      console.log(pc.dim(`\n  They may need to run: agentlink publish ${email}\n`));
+    }
+  } catch (err) {
+    spinner2.fail("Search failed");
+    console.error(pc.red(`  Error: ${err.message}\n`));
+    await mqttClient.end();
+    process.exit(1);
+  }
+
+  await mqttClient.end();
+}
+
+/**
+ * Remove discovery record from MQTT
+ */
+async function unpublishEmail(email) {
+  console.log("\n" + pc.bold("  Unpublish Discovery Record") + "\n");
+
+  // Load identity
+  if (!fs.existsSync(IDENTITY_FILE)) {
+    console.error(pc.red("  ✗ No identity found"));
+    console.log(pc.dim("  Run: agentlink init\n"));
+    process.exit(1);
+  }
+
+  const identity = JSON.parse(fs.readFileSync(IDENTITY_FILE, "utf-8"));
+  if (!identity.agent_id) {
+    console.error(pc.red("  ✗ Invalid identity file\n"));
+    process.exit(1);
+  }
+
+  // Connect to MQTT
+  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.hivemq.com";
+  const spinner = ora(`Connecting to MQTT broker...`).start();
+
+  let mqttClient;
+  try {
+    mqttClient = await mqtt.connectAsync(brokerUrl, {
+      clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
+      clean: true,
+      connectTimeout: 10000,
+    });
+    spinner.succeed("Connected to MQTT broker");
+  } catch (err) {
+    spinner.fail("Failed to connect to MQTT broker");
+    console.error(pc.red(`  Error: ${err.message}\n`));
+    process.exit(1);
+  }
+
+  // Unpublish discovery record
+  const spinner2 = ora(`Removing discovery record for ${email}...`).start();
+  try {
+    await unpublishDiscoveryRecord(email, identity.agent_id, mqttClient);
+    spinner2.succeed("Discovery record removed");
+
+    console.log(pc.green("\n  ✓ Discovery record removed"));
+    console.log(pc.dim(`  Email: ${email}`));
+    console.log(pc.dim(`\n  You are no longer discoverable by this email.\n`));
+  } catch (err) {
+    spinner2.fail("Failed to unpublish");
+    console.error(pc.red(`  Error: ${err.message}\n`));
+    await mqttClient.end();
+    process.exit(1);
+  }
+
+  await mqttClient.end();
+}
+
 // --- Main ---
 const args = process.argv.slice(2);
 const command = args[0];
@@ -1787,11 +2032,47 @@ if (command === "setup") {
   await doctor();
 } else if (command === "debug") {
   await exportDebugLogs();
+} else if (command === "init") {
+  await initIdentity();
+} else if (command === "publish") {
+  const email = args[1];
+  if (!email) {
+    console.error(pc.red("\n  Error: Email required"));
+    console.log(pc.dim("  Usage: agentlink publish <email>\n"));
+    process.exit(1);
+  }
+  await publishEmail(email);
+} else if (command === "search") {
+  const email = args[1];
+  if (!email) {
+    console.error(pc.red("\n  Error: Email required"));
+    console.log(pc.dim("  Usage: agentlink search <email>\n"));
+    process.exit(1);
+  }
+  const timeoutIdx = args.indexOf("--timeout");
+  const timeout = timeoutIdx >= 0 ? parseInt(args[timeoutIdx + 1]) : 5000;
+  await searchEmail(email, timeout);
+} else if (command === "unpublish") {
+  const email = args[1];
+  if (!email) {
+    console.error(pc.red("\n  Error: Email required"));
+    console.log(pc.dim("  Usage: agentlink unpublish <email>\n"));
+    process.exit(1);
+  }
+  await unpublishEmail(email);
 } else {
   console.log("\n" + pc.bold("  AgentLink CLI") + "\n");
   console.log("  Commands:");
   console.log("    " + pc.cyan("agentlink setup [--join CODE] [--human-name NAME] [--agent-name NAME]"));
   console.log("      " + pc.dim("Set up AgentLink and optionally join with an invite code\n"));
+  console.log("    " + pc.cyan("agentlink init [--name NAME]"));
+  console.log("      " + pc.dim("Initialize AgentLink identity (generates v2 agent ID)\n"));
+  console.log("    " + pc.cyan("agentlink publish <email>"));
+  console.log("      " + pc.dim("Publish your agent ID for discovery by email\n"));
+  console.log("    " + pc.cyan("agentlink search <email> [--timeout MS]"));
+  console.log("      " + pc.dim("Search for an agent by email\n"));
+  console.log("    " + pc.cyan("agentlink unpublish <email>"));
+  console.log("      " + pc.dim("Remove your discovery record\n"));
   console.log("    " + pc.cyan("agentlink invite [--recipient-name NAME]"));
   console.log("      " + pc.dim("Generate an invite code to share with someone\n"));
   console.log("    " + pc.cyan("agentlink doctor [options]"));
@@ -1807,6 +2088,12 @@ if (command === "setup") {
   console.log("  Examples:");
   console.log("    " + pc.cyan("agentlink setup"));
   console.log("    " + pc.cyan("agentlink setup --join ABC123 --human-name \"Alice\" --agent-name \"Agent A\""));
+  console.log("    " + pc.cyan("agentlink init"));
+  console.log("    " + pc.cyan("agentlink init --name \"Alice\""));
+  console.log("    " + pc.cyan("agentlink publish alice@example.com"));
+  console.log("    " + pc.cyan("agentlink search alice@example.com"));
+  console.log("    " + pc.cyan("agentlink search bob@example.com --timeout 10000"));
+  console.log("    " + pc.cyan("agentlink unpublish alice@example.com"));
   console.log("    " + pc.cyan("agentlink invite --recipient-name \"Bob\""));
   console.log("    " + pc.cyan("agentlink doctor"));
   console.log("    " + pc.cyan("agentlink doctor --format json"));

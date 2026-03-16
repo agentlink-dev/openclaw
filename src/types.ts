@@ -28,6 +28,7 @@ export function isValidAgentId(id: string): boolean {
 // ---------------------------------------------------------------------------
 
 export const TOPICS = {
+  // V1 topics (existing - keep for backward compatibility)
   /** Agent A's inbox from a specific sender */
   inbox(recipientId: string, senderId: string): string {
     return `agentlink/agents/${recipientId}/from/${senderId}`;
@@ -43,6 +44,20 @@ export const TOPICS = {
   /** Invite code topic (retained) */
   invite(code: string): string {
     return `agentlink/invites/${code}`;
+  },
+
+  // V2 topics (new - simplified structure)
+  /** V2 inbox topic for high-entropy agent IDs */
+  inboxV2(recipientId: string): string {
+    return `agentlink/inbox/${recipientId}`;
+  },
+  /** V2 outbox topic for high-entropy agent IDs */
+  outboxV2(senderId: string, recipientId: string): string {
+    return `agentlink/outbox/${senderId}/${recipientId}`;
+  },
+  /** V2 discovery topic for privacy-preserving discovery */
+  discoveryV2(hash: string): string {
+    return `agentlink/discovery/v2/${hash}`;
   },
 } as const;
 
@@ -156,7 +171,7 @@ export function isInviteExpired(invite: InvitePayload): boolean {
 
 export function generateInviteCode(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No confusing chars (0,O,I,1)
-  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
 // ---------------------------------------------------------------------------

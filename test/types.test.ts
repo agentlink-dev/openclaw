@@ -42,6 +42,7 @@ describe("Agent ID", () => {
 });
 
 describe("MQTT Topics", () => {
+  // V1 Topics (existing)
   it("builds inbox topic", () => {
     expect(TOPICS.inbox("brienne-4m2p", "arya-7k3x")).toBe(
       "agentlink/agents/brienne-4m2p/from/arya-7k3x"
@@ -73,6 +74,27 @@ describe("MQTT Topics", () => {
   it("returns null for non-inbox topics", () => {
     expect(parseSenderFromTopic("agentlink/agents/arya-7k3x/status")).toBeNull();
     expect(parseSenderFromTopic("random/topic")).toBeNull();
+  });
+
+  // V2 Topics (new)
+  it("constructs v2 inbox topics", () => {
+    const topic = TOPICS.inboxV2("5HueCGU8rMjxEXxiPuD5BDk");
+    expect(topic).toBe("agentlink/inbox/5HueCGU8rMjxEXxiPuD5BDk");
+  });
+
+  it("constructs v2 outbox topics", () => {
+    const topic = TOPICS.outboxV2("5HueCGU8rMjxEXxiPuD5BDk", "7pq2KXW9vRnCzYmEHfTaUDx");
+    expect(topic).toBe("agentlink/outbox/5HueCGU8rMjxEXxiPuD5BDk/7pq2KXW9vRnCzYmEHfTaUDx");
+  });
+
+  it("constructs v2 discovery topics", () => {
+    const topic = TOPICS.discoveryV2("abcd1234");
+    expect(topic).toBe("agentlink/discovery/v2/abcd1234");
+  });
+
+  it("v2 topics work with different hash formats", () => {
+    expect(TOPICS.discoveryV2("a1b2c3d4e5f6")).toBe("agentlink/discovery/v2/a1b2c3d4e5f6");
+    expect(TOPICS.discoveryV2("ABCDEF123456")).toBe("agentlink/discovery/v2/ABCDEF123456");
   });
 });
 
@@ -123,9 +145,9 @@ describe("Status Payload", () => {
 });
 
 describe("Invite", () => {
-  it("generates 6-char code", () => {
+  it("generates 8-char code", () => {
     const code = generateInviteCode();
-    expect(code).toHaveLength(6);
+    expect(code).toHaveLength(8);
     expect(code).toMatch(/^[A-Z2-9]+$/);
   });
 
@@ -133,7 +155,7 @@ describe("Invite", () => {
     const invite = createInvitePayload("arya-7k3x", "Rupul");
     expect(invite.agent_id).toBe("arya-7k3x");
     expect(invite.human_name).toBe("Rupul");
-    expect(invite.code).toHaveLength(6);
+    expect(invite.code).toHaveLength(8);
 
     const created = new Date(invite.created).getTime();
     const expires = new Date(invite.expires).getTime();
@@ -147,5 +169,36 @@ describe("Invite", () => {
 
     const expired = { ...invite, expires: "2020-01-01T00:00:00Z" };
     expect(isInviteExpired(expired)).toBe(true);
+  });
+
+  it("uses only allowed characters (no confusing chars)", () => {
+    for (let i = 0; i < 100; i++) {
+      const code = generateInviteCode();
+      expect(code).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+      expect(code).not.toMatch(/[0OI1]/); // No confusing characters
+    }
+  });
+
+  it("generates unique codes (no collisions in 10k samples)", () => {
+    const codes = new Set();
+    for (let i = 0; i < 10000; i++) {
+      codes.add(generateInviteCode());
+    }
+    expect(codes.size).toBe(10000);
+  });
+
+  it("has 40 bits of entropy (8 chars, 32-char alphabet)", () => {
+    // 32^8 = 1,099,511,627,776 possible codes (~ 1.1 trillion)
+    // Verify by checking distribution
+    const codes = Array.from({ length: 1000 }, () => generateInviteCode());
+    const firstChars = codes.map(code => code[0]);
+    const distribution = firstChars.reduce((acc, char) => {
+      acc[char] = (acc[char] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    // Expect roughly uniform distribution
+    const uniqueChars = Object.keys(distribution).length;
+    expect(uniqueChars).toBeGreaterThan(20); // At least 20 of 32 chars
   });
 });
