@@ -199,11 +199,13 @@ export async function publishDiscoveryRecord(
   };
 
   // Publish with retained flag (persists on broker)
+  // Using qos:0 because qos:1 callbacks don't fire when client has options
+  // (CLI uses qos:1 with no-options pattern, but library function works with any client)
   return new Promise((resolve, reject) => {
     mqttClient.publish(
       topic,
       JSON.stringify(record),
-      { qos: 1, retain: true },
+      { qos: 0, retain: true },
       (err) => {
         if (err) reject(err);
         else resolve();

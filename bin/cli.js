@@ -18,7 +18,7 @@ import ora from "ora";
 import { WebSocket } from "ws";
 import mqtt from "mqtt";
 import { generateAgentIdV2, isValidAgentIdV2 } from "../dist/src/types-v2.js";
-import { publishDiscoveryRecord, unpublishDiscoveryRecord, searchByIdentifier } from "../dist/src/discovery.js";
+import { publishDiscoveryRecord, unpublishDiscoveryRecord, searchByIdentifier, hashIdentifier, extractShortHash } from "../dist/src/discovery.js";
 
 // Respect OpenClaw environment variables (set by Railway/Docker, not by homebrew)
 const OPENCLAW_STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
@@ -1836,43 +1836,47 @@ async function publishEmail(email) {
     process.exit(1);
   }
 
-  // Connect to MQTT
-  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.hivemq.com";
-  const spinner = ora(`Connecting to MQTT broker...`).start();
+  // Publish to MQTT using exact invite pattern (from 18a0bb8)
+  const brokerUrl = "mqtt://broker.emqx.io:1883";
+  const client = mqtt.connect(brokerUrl);  // NO OPTIONS - like invite code
+  const spinner = ora(`Publishing discovery record for ${email}...`).start();
 
-  let mqttClient;
   try {
-    mqttClient = await mqtt.connectAsync(brokerUrl, {
-      clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
-      clean: true,
-      connectTimeout: 10000,
+    await new Promise((resolve, reject) => {
+      client.on("connect", async () => {
+        // Compute hash INSIDE connect handler (like test does)
+        const fullHash = await hashIdentifier(email, identity.agent_id);
+        const shortHash = extractShortHash(fullHash);
+        const topic = `agentlink/discovery/v2/${shortHash}`;
+
+        const record = {
+          agentId: identity.agent_id,
+          timestamp: Date.now(),
+        };
+
+        // Publish with exact invite pattern: qos:1, end inside callback
+        client.publish(topic, JSON.stringify(record), { retain: true, qos: 1 }, (err) => {
+          client.end();  // END INSIDE CALLBACK
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("MQTT connection timeout")), 10000);
     });
-    spinner.succeed("Connected to MQTT broker");
-  } catch (err) {
-    spinner.fail("Failed to connect to MQTT broker");
-    console.error(pc.red(`  Error: ${err.message}\n`));
-    process.exit(1);
-  }
 
-  // Publish discovery record
-  const spinner2 = ora(`Publishing discovery record for ${email}...`).start();
-  try {
-    await publishDiscoveryRecord(email, identity.agent_id, mqttClient);
-    spinner2.succeed("Discovery record published");
-
+    spinner.succeed("Discovery record published");
     console.log(pc.green("\n  ✓ Published successfully"));
     console.log(pc.dim(`  Email: ${email}`));
     console.log(pc.dim(`  Agent ID: ${identity.agent_id}`));
     console.log(pc.dim(`\n  Others can now find you by searching:`));
     console.log(pc.cyan(`  agentlink search ${email}\n`));
   } catch (err) {
-    spinner2.fail("Failed to publish");
+    spinner.fail("Failed to publish");
     console.error(pc.red(`  Error: ${err.message}\n`));
-    await mqttClient.end();
     process.exit(1);
   }
-
-  await mqttClient.end();
 }
 
 /**
@@ -1895,15 +1899,20 @@ async function searchEmail(email, timeoutMs) {
   }
 
   // Connect to MQTT
-  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.hivemq.com";
+  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.emqx.io:1883";
   const spinner = ora(`Connecting to MQTT broker...`).start();
 
   let mqttClient;
   try {
-    mqttClient = await mqtt.connectAsync(brokerUrl, {
-      clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
-      clean: true,
-      connectTimeout: 10000,
+    mqttClient = await new Promise((resolve, reject) => {
+      const client = mqtt.connect(brokerUrl, {
+        clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
+        clean: true,
+        connectTimeout: 10000,
+      });
+      client.on("connect", () => resolve(client));
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("Connection timeout")), 10000);
     });
     spinner.succeed("Connected to MQTT broker");
   } catch (err) {
@@ -1933,17 +1942,17 @@ async function searchEmail(email, timeoutMs) {
       console.log(pc.yellow("\n  ✗ Agent not found"));
       console.log(pc.dim(`  The email ${email} is not published for discovery.`));
       console.log(pc.dim(`\n  They may need to run: agentlink publish ${email}\n`));
-      await mqttClient.end();
+      await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
       process.exit(1);  // Exit with error code when not found
     }
   } catch (err) {
     spinner2.fail("Search failed");
     console.error(pc.red(`  Error: ${err.message}\n`));
-    await mqttClient.end();
+    await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
     process.exit(1);
   }
 
-  await mqttClient.end();
+  await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
 }
 
 /**
@@ -1966,15 +1975,20 @@ async function unpublishEmail(email) {
   }
 
   // Connect to MQTT
-  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.hivemq.com";
+  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.emqx.io:1883";
   const spinner = ora(`Connecting to MQTT broker...`).start();
 
   let mqttClient;
   try {
-    mqttClient = await mqtt.connectAsync(brokerUrl, {
-      clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
-      clean: true,
-      connectTimeout: 10000,
+    mqttClient = await new Promise((resolve, reject) => {
+      const client = mqtt.connect(brokerUrl, {
+        clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
+        clean: true,
+        connectTimeout: 10000,
+      });
+      client.on("connect", () => resolve(client));
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("Connection timeout")), 10000);
     });
     spinner.succeed("Connected to MQTT broker");
   } catch (err) {
@@ -1995,11 +2009,11 @@ async function unpublishEmail(email) {
   } catch (err) {
     spinner2.fail("Failed to unpublish");
     console.error(pc.red(`  Error: ${err.message}\n`));
-    await mqttClient.end();
+    await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
     process.exit(1);
   }
 
-  await mqttClient.end();
+  await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
 }
 
 // --- Main ---
