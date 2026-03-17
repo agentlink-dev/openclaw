@@ -5,7 +5,7 @@ import { resolveIdentity } from "./identity.js";
 import { createContacts } from "./contacts.js";
 import { createInvitationsStore } from "./invitations.js";
 import { createMqttService } from "./mqtt-service.js";
-import { createMessageTool, createWhoisTool, createInviteTool, createJoinTool, createLogsTool, createDebugTool } from "./tools.js";
+import { createMessageTool, createWhoisTool, createConnectTool, createInviteTool, createJoinTool, createLogsTool, createDebugTool } from "./tools.js";
 import {
   handleIncomingEnvelope,
   dispatchToSession,
@@ -475,6 +475,7 @@ function register(api: PluginApi) {
   // --- Tools ---
   api.registerTool(createMessageTool(config, mqttClient, contacts, api.logger, a2aManager, onA2AStarted));
   api.registerTool(createWhoisTool(config, mqttClient, contacts, api.logger));
+  api.registerTool(createConnectTool(config, mqttClient, contacts, api.logger));
   api.registerTool(createInviteTool(config, mqttClient, api.logger, invitations));
   api.registerTool(createJoinTool(config, mqttClient, contacts, api.logger, invitations));
   api.registerTool(createLogsTool(config, contacts, logWriter));

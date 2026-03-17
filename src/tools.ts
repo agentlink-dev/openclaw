@@ -6,6 +6,7 @@ import type { A2ASessionManager } from "./a2a-session.js";
 import type { A2ALogWriter } from "./a2a-log.js";
 import type { InvitationsStore } from "./invitations.js";
 import { resolveInviteCode } from "./invite.js";
+import { searchByIdentifier } from "./discovery.js";
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -239,6 +240,117 @@ export function createWhoisTool(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return text(`Failed to look up agent: ${msg}`);
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tool: agentlink_connect
+// ---------------------------------------------------------------------------
+
+export function createConnectTool(
+  config: AgentLinkConfig,
+  mqttClient: MqttClient,
+  contacts: ContactsStore,
+  logger: Logger,
+): ToolDefinition {
+  return {
+    name: "agentlink_connect",
+    label: "AgentLink: Connect by Email",
+    description:
+      "Discover and connect to an agent by their email address. Searches the public directory for published agents and adds them to your contacts. The agent must have published their email using 'agentlink publish <email>'.",
+    parameters: {
+      type: "object",
+      required: ["email"],
+      properties: {
+        email: {
+          type: "string",
+          description: "Email address to search for (e.g., 'alice@example.com')",
+        },
+        name: {
+          type: "string",
+          description: "Contact name to save as (optional, defaults to email username)",
+        },
+        display_name: {
+          type: "string",
+          description: "Display name for the contact (optional)",
+        },
+      },
+    },
+    async execute(_id, params) {
+      const email = params.email as string;
+      const contactName = params.name as string | undefined;
+      const displayName = params.display_name as string | undefined;
+
+      if (!email) {
+        return text("Error: 'email' parameter is required.");
+      }
+
+      // Validate email format
+      if (!email.includes("@")) {
+        return text(`Error: Invalid email format: ${email}`);
+      }
+
+      logger.info(`[agentlink_connect] Searching for ${email}...`);
+
+      try {
+        // Search for agent using discovery protocol
+        // Note: searchByIdentifier expects raw mqtt.MqttClient, cast our wrapped client
+        const result = await searchByIdentifier(
+          { identifier: email, timeoutMs: 5000 },
+          config.agentId,
+          mqttClient as any
+        );
+
+        if (!result.found || !result.agentId) {
+          return text(
+            `Agent not found for email: ${email}\n\n` +
+            `The agent may not have published this email to the directory.\n` +
+            `They need to run: agentlink publish ${email}`
+          );
+        }
+
+        // Check if already in contacts
+        const existing = contacts.findByAgentId(result.agentId);
+        if (existing) {
+          return text(
+            `Already connected to this agent!\n\n` +
+            `Contact name: ${existing.name}\n` +
+            `Agent ID: ${result.agentId}\n` +
+            `Email: ${email}`
+          );
+        }
+
+        // Determine contact name
+        const finalName = contactName || email.split('@')[0].toLowerCase();
+
+        // Check if name is already taken
+        if (contacts.has(finalName)) {
+          return text(
+            `Error: Contact name "${finalName}" is already in use.\n\n` +
+            `Please provide a different name using the 'name' parameter.`
+          );
+        }
+
+        // Add to contacts
+        contacts.add(finalName, result.agentId, displayName || email);
+
+        logger.info(`[agentlink_connect] Added ${email} as contact "${finalName}"`);
+
+        return text(
+          `✓ Connected to agent successfully!\n\n` +
+          `Email: ${email}\n` +
+          `Contact name: ${finalName}\n` +
+          (displayName ? `Display name: ${displayName}\n` : "") +
+          `Agent ID: ${result.agentId}\n\n` +
+          `You can now send messages using:\n` +
+          `"Send a message to ${finalName}"`
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error(`[agentlink_connect] Failed to connect: ${msg}`);
+        return text(`Failed to connect: ${msg}`);
       }
     },
   };
