@@ -7,6 +7,7 @@ import type { A2ALogWriter } from "./a2a-log.js";
 import type { InvitationsStore } from "./invitations.js";
 import { resolveInviteCode } from "./invite.js";
 import { searchByIdentifier } from "./discovery.js";
+import mqtt from "mqtt";
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -304,12 +305,30 @@ export function createConnectTool(
 
       try {
         // Search for agent using discovery protocol
-        // Note: searchByIdentifier expects raw mqtt.MqttClient, cast our wrapped client
-        const result = await searchByIdentifier(
-          { identifier: email, timeoutMs: 5000 },
-          config.agentId,
-          mqttClient as any
-        );
+        // Create temporary raw MQTT client for discovery (searchByIdentifier needs raw client)
+        const rawClient = await new Promise<mqtt.MqttClient>((resolve, reject) => {
+          const client = mqtt.connect(config.brokerUrl, {
+            username: config.brokerUsername,
+            password: config.brokerPassword,
+            clientId: `agentlink-connect-${config.agentId}-${Date.now()}`,
+            clean: true,
+            connectTimeout: 10000,
+          });
+          client.on("connect", () => resolve(client));
+          client.on("error", (err) => reject(err));
+          setTimeout(() => reject(new Error("MQTT connection timeout")), 10000);
+        });
+
+        let result;
+        try {
+          result = await searchByIdentifier(
+            { identifier: email, timeoutMs: 5000 },
+            config.agentId,
+            rawClient
+          );
+        } finally {
+          rawClient.end();
+        }
 
         if (!result.found || !result.agentId) {
           return text(

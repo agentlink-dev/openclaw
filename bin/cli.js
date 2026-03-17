@@ -29,19 +29,7 @@ const OC_CONFIG_PATH = path.join(OPENCLAW_STATE_DIR, "openclaw.json");
 const DATA_DIR = process.env.AGENTLINK_DATA_DIR || path.join(os.homedir(), ".agentlink");
 const IDENTITY_FILE = path.join(DATA_DIR, "identity.json");
 
-const ID_CHARSET = "abcdefghijklmnopqrstuvwxyz0123456789";
-
-function generateSuffix(len = 4) {
-  return Array.from({ length: len }, () =>
-    ID_CHARSET[Math.floor(Math.random() * ID_CHARSET.length)]
-  ).join("");
-}
-
-function slugify(name) {
-  // Normalize Unicode (e.g., Š → S)
-  const normalized = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  return normalized.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 20) || "agent";
-}
+// V1 ID generation functions removed - now using generateAgentIdV2() for high-entropy IDs
 
 function ask(question) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -359,7 +347,7 @@ async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, l
       }
     }
 
-    const agentId = `${slugify(agentName)}-${generateSuffix()}`;
+    const agentId = generateAgentIdV2();
     identity = {
       agent_id: agentId,
       human_name: humanName,
@@ -1822,6 +1810,9 @@ async function initIdentity() {
       console.log(pc.dim(`  Agent ID: ${identity.agent_id}`));
       console.log(pc.dim(`  Human Name: ${identity.human_name}`));
       console.log(pc.dim(`  Agent Name: ${identity.agent_name || "N/A"}`));
+      if (identity.email) console.log(pc.dim(`  Email: ${identity.email}`));
+      if (identity.phone) console.log(pc.dim(`  Phone: ${identity.phone}`));
+      if (identity.location) console.log(pc.dim(`  Location: ${identity.location}`));
       console.log(pc.dim(`\n  To reset, run: agentlink reset\n`));
       return;
     } catch {
@@ -1829,12 +1820,30 @@ async function initIdentity() {
     }
   }
 
-  // Get display name
-  const nameIdx = args.indexOf("--name");
-  let humanName = nameIdx >= 0 ? args[nameIdx + 1] : null;
+  // Parse flags
+  const humanNameIdx = args.indexOf("--human-name");
+  const agentNameIdx = args.indexOf("--agent-name");
+  const emailIdx = args.indexOf("--email");
+  const phoneIdx = args.indexOf("--phone");
+  const locationIdx = args.indexOf("--location");
 
+  // Backward compatibility: --name is alias for --human-name
+  const nameIdx = args.indexOf("--name");
+
+  let humanName = humanNameIdx >= 0 ? args[humanNameIdx + 1] :
+                  nameIdx >= 0 ? args[nameIdx + 1] : null;
+  let agentName = agentNameIdx >= 0 ? args[agentNameIdx + 1] : null;
+  let email = emailIdx >= 0 ? args[emailIdx + 1] : null;
+  let phone = phoneIdx >= 0 ? args[phoneIdx + 1] : null;
+  let location = locationIdx >= 0 ? args[locationIdx + 1] : null;
+
+  // Interactive prompts if flags not provided
   if (!humanName) {
     humanName = os.userInfo().username || "Agent";
+  }
+
+  if (!agentName) {
+    agentName = humanName; // Use human name as agent name by default
   }
 
   // Generate v2 agent ID
@@ -1849,19 +1858,28 @@ async function initIdentity() {
 
   spinner.succeed("Agent ID generated");
 
-  // Create identity
+  // Create identity with all fields
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const identity = {
     agent_id: agentId,
     human_name: humanName,
-    agent_name: humanName, // Use human name as agent name by default
+    agent_name: agentName,
   };
+
+  // Add optional fields only if provided
+  if (email) identity.email = email;
+  if (phone) identity.phone = phone;
+  if (location) identity.location = location;
 
   fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2) + "\n");
 
   console.log(pc.green("  ✓ AgentLink identity created"));
   console.log(pc.dim(`  Agent ID: ${agentId}`));
-  console.log(pc.dim(`  Display Name: ${humanName}`));
+  console.log(pc.dim(`  Human Name: ${humanName}`));
+  console.log(pc.dim(`  Agent Name: ${agentName}`));
+  if (email) console.log(pc.dim(`  Email: ${email}`));
+  if (phone) console.log(pc.dim(`  Phone: ${phone}`));
+  if (location) console.log(pc.dim(`  Location: ${location}`));
   console.log(pc.dim(`\n  Your agent ID is stored in ~/.agentlink/identity.json`));
   console.log(pc.dim(`  Share your agent ID with others to connect.\n`));
 }
@@ -2322,7 +2340,7 @@ if (command === "setup") {
   console.log("  Commands:");
   console.log("    " + pc.cyan("agentlink setup [--join CODE] [--human-name NAME] [--agent-name NAME] [--email EMAIL] [--phone PHONE] [--location LOCATION] [--json]"));
   console.log("      " + pc.dim("Set up AgentLink and optionally join with an invite code\n"));
-  console.log("    " + pc.cyan("agentlink init [--name NAME]"));
+  console.log("    " + pc.cyan("agentlink init [--human-name NAME] [--agent-name NAME] [--email EMAIL] [--phone PHONE] [--location LOCATION]"));
   console.log("      " + pc.dim("Initialize AgentLink identity (generates v2 agent ID)\n"));
   console.log("    " + pc.cyan("agentlink publish <email>"));
   console.log("      " + pc.dim("Publish your agent ID for discovery by email\n"));
@@ -2348,7 +2366,8 @@ if (command === "setup") {
   console.log("    " + pc.cyan("agentlink setup"));
   console.log("    " + pc.cyan("agentlink setup --join ABC123 --human-name \"Alice\" --agent-name \"Agent A\""));
   console.log("    " + pc.cyan("agentlink init"));
-  console.log("    " + pc.cyan("agentlink init --name \"Alice\""));
+  console.log("    " + pc.cyan("agentlink init --human-name \"Alice\" --agent-name \"Alice Agent\""));
+  console.log("    " + pc.cyan("agentlink init --human-name \"Bob\" --email \"bob@example.com\" --phone \"+1234567890\" --location \"San Francisco\""));
   console.log("    " + pc.cyan("agentlink publish alice@example.com"));
   console.log("    " + pc.cyan("agentlink search alice@example.com"));
   console.log("    " + pc.cyan("agentlink search bob@example.com --timeout 10000"));

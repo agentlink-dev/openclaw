@@ -44,7 +44,9 @@ interface PluginApi {
 // ---------------------------------------------------------------------------
 
 function resolveConfig(raw: Record<string, unknown>): AgentLinkConfig {
-  const dataDir = (raw.data_dir as string) ?? path.join(os.homedir(), ".agentlink");
+  const dataDir = (raw.data_dir as string)
+    ?? process.env.AGENTLINK_DATA_DIR
+    ?? path.join(os.homedir(), ".agentlink");
   const identity = resolveIdentity({
     agentId: (raw.agent as Record<string, unknown>)?.id as string | undefined,
     humanName: (raw.agent as Record<string, unknown>)?.human_name as string | undefined
