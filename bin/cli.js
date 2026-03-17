@@ -19,6 +19,7 @@ import { WebSocket } from "ws";
 import mqtt from "mqtt";
 import { generateAgentIdV2, isValidAgentIdV2 } from "../dist/src/types-v2.js";
 import { publishDiscoveryRecord, unpublishDiscoveryRecord, searchByIdentifier, hashIdentifier, extractShortHash } from "../dist/src/discovery.js";
+import { createContacts } from "../dist/src/contacts.js";
 
 // Respect OpenClaw environment variables (set by Railway/Docker, not by homebrew)
 const OPENCLAW_STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
@@ -1956,6 +1957,117 @@ async function searchEmail(email, timeoutMs) {
 }
 
 /**
+ * Connect to an agent by email (search + add to contacts)
+ */
+async function connectToAgent(email, nameFlag, displayNameFlag) {
+  console.log("\n" + pc.bold("  Connect to Agent") + "\n");
+
+  // Load identity
+  if (!fs.existsSync(IDENTITY_FILE)) {
+    console.error(pc.red("  ✗ No identity found"));
+    console.log(pc.dim("  Run: agentlink init\n"));
+    process.exit(1);
+  }
+
+  const identity = JSON.parse(fs.readFileSync(IDENTITY_FILE, "utf-8"));
+  if (!identity.agent_id) {
+    console.error(pc.red("  ✗ Invalid identity file\n"));
+    process.exit(1);
+  }
+
+  // Connect to MQTT
+  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://broker.emqx.io:1883";
+  const spinner = ora(`Searching for ${email}...`).start();
+
+  let mqttClient;
+  try {
+    mqttClient = await new Promise((resolve, reject) => {
+      const client = mqtt.connect(brokerUrl, {
+        clientId: `agentlink-cli-${identity.agent_id}-${Date.now()}`,
+        clean: true,
+        connectTimeout: 10000,
+      });
+      client.on("connect", () => resolve(client));
+      client.on("error", reject);
+      setTimeout(() => reject(new Error("Connection timeout")), 10000);
+    });
+  } catch (err) {
+    spinner.fail("Failed to connect to MQTT broker");
+    console.error(pc.red(`  Error: ${err.message}\n`));
+    process.exit(1);
+  }
+
+  // Search for agent
+  try {
+    const result = await searchByIdentifier(
+      { identifier: email, timeoutMs: 5000 },
+      identity.agent_id,
+      mqttClient
+    );
+
+    if (!result.found) {
+      spinner.fail("Agent not found");
+      console.log(pc.yellow("\n  ✗ Agent not found"));
+      console.log(pc.dim(`  The email ${email} is not published for discovery.`));
+      console.log(pc.dim(`\n  They may need to run: agentlink publish ${email}\n`));
+      await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
+      process.exit(1);
+    }
+
+    spinner.succeed("Agent found");
+
+    // Load contacts
+    const contacts = createContacts(DATA_DIR);
+
+    // Check if already connected
+    const existing = contacts.findByAgentId(result.agentId);
+    if (existing) {
+      console.log(pc.yellow("\n  ⚠ Already connected to this agent"));
+      console.log(pc.dim(`  Saved as: ${existing.name}`));
+      console.log(pc.dim(`  Agent ID: ${result.agentId}\n`));
+      await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
+      return;
+    }
+
+    // Determine contact name
+    let contactName = nameFlag;
+    if (!contactName) {
+      // Suggest name from email
+      const suggestedName = email.split('@')[0].toLowerCase();
+      const response = await ask(`  Contact name [${suggestedName}]: `);
+      contactName = response || suggestedName;
+    }
+
+    // Determine display name
+    let displayName = displayNameFlag;
+    if (!displayName && !displayNameFlag) {
+      const response = await ask(`  Display name (optional): `);
+      displayName = response || null;
+    }
+
+    // Add to contacts
+    contacts.add(contactName, result.agentId, displayName, undefined);
+
+    console.log(pc.green("\n  ✓ Contact saved"));
+    console.log(pc.dim(`  Email: ${email}`));
+    console.log(pc.dim(`  Name: ${contactName}`));
+    if (displayName) {
+      console.log(pc.dim(`  Display name: ${displayName}`));
+    }
+    console.log(pc.dim(`  Agent ID: ${result.agentId}`));
+    console.log(pc.dim(`\n  You can now message via OpenClaw:`));
+    console.log(pc.cyan(`  "Send a message to ${contactName}"\n`));
+
+    await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
+  } catch (err) {
+    spinner.fail("Connection failed");
+    console.error(pc.red(`  Error: ${err.message}\n`));
+    await new Promise((resolve) => mqttClient.end(false, {}, () => resolve()));
+    process.exit(1);
+  }
+}
+
+/**
  * Remove discovery record from MQTT
  */
 async function unpublishEmail(email) {
@@ -2068,6 +2180,18 @@ if (command === "setup") {
   const timeoutIdx = args.indexOf("--timeout");
   const timeout = timeoutIdx >= 0 ? parseInt(args[timeoutIdx + 1]) : 5000;
   await searchEmail(email, timeout);
+} else if (command === "connect") {
+  const email = args[1];
+  if (!email) {
+    console.error(pc.red("\n  Error: Email required"));
+    console.log(pc.dim("  Usage: agentlink connect <email> [--name NAME] [--display-name NAME]\n"));
+    process.exit(1);
+  }
+  const nameIdx = args.indexOf("--name");
+  const name = nameIdx >= 0 ? args[nameIdx + 1] : null;
+  const displayNameIdx = args.indexOf("--display-name");
+  const displayName = displayNameIdx >= 0 ? args[displayNameIdx + 1] : null;
+  await connectToAgent(email, name, displayName);
 } else if (command === "unpublish") {
   const email = args[1];
   if (!email) {
@@ -2087,6 +2211,8 @@ if (command === "setup") {
   console.log("      " + pc.dim("Publish your agent ID for discovery by email\n"));
   console.log("    " + pc.cyan("agentlink search <email> [--timeout MS]"));
   console.log("      " + pc.dim("Search for an agent by email\n"));
+  console.log("    " + pc.cyan("agentlink connect <email> [--name NAME] [--display-name NAME]"));
+  console.log("      " + pc.dim("Connect to an agent by email (adds to contacts)\n"));
   console.log("    " + pc.cyan("agentlink unpublish <email>"));
   console.log("      " + pc.dim("Remove your discovery record\n"));
   console.log("    " + pc.cyan("agentlink invite [--recipient-name NAME]"));
@@ -2109,6 +2235,8 @@ if (command === "setup") {
   console.log("    " + pc.cyan("agentlink publish alice@example.com"));
   console.log("    " + pc.cyan("agentlink search alice@example.com"));
   console.log("    " + pc.cyan("agentlink search bob@example.com --timeout 10000"));
+  console.log("    " + pc.cyan("agentlink connect alice@example.com"));
+  console.log("    " + pc.cyan("agentlink connect bob@example.com --name bob --display-name \"Bob Smith\""));
   console.log("    " + pc.cyan("agentlink unpublish alice@example.com"));
   console.log("    " + pc.cyan("agentlink invite --recipient-name \"Bob\""));
   console.log("    " + pc.cyan("agentlink doctor"));
