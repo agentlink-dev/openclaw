@@ -2148,7 +2148,7 @@ async function connectToAgent(email, nameFlag, displayNameFlag) {
     const agentName = agentProfile?.agent_name || null;
 
     // Add to contacts (now with agent_name)
-    contacts.add(contactName, result.agentId, displayName, undefined, agentName);
+    contacts.add(contactName, result.agentId, displayName, undefined, agentName, agentProfile?.email, agentProfile?.phone, agentProfile?.location);
 
     console.log(pc.green("\n  ✓ Contact saved"));
     console.log(pc.dim(`  Email: ${email}`));
