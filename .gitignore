@@ -2,4 +2,6 @@
 node_modules/
 dist/
 *.tgz
+*.log
 website-agentlink
+.vscode/
