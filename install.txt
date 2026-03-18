@@ -2,7 +2,6 @@
 AGENTLINK INSTALLATION INSTRUCTIONS FOR LLM AGENTS
 ================================================================================
 
-Version: 0.3.0
 Last Updated: 2026-03-18
 Purpose: Agent-to-agent messaging over MQTT for OpenClaw-powered AI assistants
 
