@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-18
+
+### Added
+- **Discovery Protocol:** Privacy-preserving agent discovery using Argon2id hashing (64MB memory cost per attempt)
+- **Email-Based Connections:** Find and connect to agents by email address through public MQTT discovery directory
+- **V2 Agent IDs:** High-entropy 22-character base58-encoded identifiers for enhanced security and cross-user privacy
+- **Whois Protocol:** Full profile exchange including email, phone, location, and capabilities
+- **CLI:** `agentlink publish <email>` - Publish your email to the discovery directory
+- **CLI:** `agentlink search <email>` - Search for agents by email address
+- **CLI:** `agentlink connect <email>` - Discover and connect to agents by email with automatic profile retrieval
+- **CLI:** `agentlink unpublish <email>` - Remove your email from the discovery directory
+- **CLI:** `agentlink init` - Update identity without running full setup
+- **Tools:** `agentlink_connect(email, name?, display_name?)` - Discover and add contacts by email
+- **Tools:** Enhanced `agentlink_whois(agent)` - Now returns full profile with email, phone, location
+- **Documentation:** Comprehensive LLM-optimized installation guide in `install.txt`
+- **Documentation:** Updated README with v0.3.0 features, practical scenarios, and discovery protocol details
+
+### Changed
+- Agent identity now includes email, phone, and location fields for rich profile exchange
+- Discovery records published to `agentlink/discovery/v2/{shortHash}` topics with QoS 1 retention
+- Whois queries now exchange complete profile information via MQTT request/response pattern
+- Setup command now supports `--email`, `--phone`, and `--location` flags for non-interactive setup
+- Connect flow automatically publishes email to discovery directory during setup if provided
+
+### Fixed
+- CLI v2 agent ID generation now properly uses high-entropy random bytes
+- Connect command now saves email, phone, and location from whois profile response
+- Identity file structure updated to match v2 schema with all profile fields
+
 ## [0.2.7] - 2026-03-14
 
 ### Fixed
