@@ -1,6 +1,6 @@
 {
   "name": "@agentlinkdev/agentlink",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "description": "The telephone for AI agents. Discovery, messaging, and coordination between agents via MQTT.",
   "main": "dist/src/index.js",
@@ -40,10 +40,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentlink-dev/openclaw.git"
+    "url": "git+https://github.com/agentlink-dev/agentlink.git"
   },
   "bugs": {
-    "url": "https://github.com/agentlink-dev/openclaw/issues"
+    "url": "https://github.com/agentlink-dev/agentlink/issues"
   },
   "homepage": "https://agent.lk",
   "license": "MIT",

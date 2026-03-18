@@ -432,9 +432,20 @@ async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, l
     // Re-read config (plugin install may have modified it)
     config = JSON.parse(fs.readFileSync(OC_CONFIG_PATH, "utf-8"));
 
-    // Re-add plugins.allow
+    // Re-add plugins.allow (merge with existing, don't overwrite)
     if (!config.plugins) config.plugins = {};
-    config.plugins.allow = ["agentlink"];
+    if (!config.plugins.allow) config.plugins.allow = [];
+    if (!config.plugins.allow.includes("agentlink")) {
+      config.plugins.allow.push("agentlink");
+    }
+    // Restore any previously existing entries that were removed
+    if (hadPluginsAllow) {
+      for (const p of hadPluginsAllow) {
+        if (!config.plugins.allow.includes(p)) {
+          config.plugins.allow.push(p);
+        }
+      }
+    }
 
     // Add tools.alsoAllow (CRITICAL: not tools.allow)
     if (!config.tools) config.tools = {};
