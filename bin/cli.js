@@ -787,7 +787,7 @@ function uninstall(options = {}) {
     if (options.verify) {
       console.log(pc.dim("  Running verification..."));
       try {
-        execSync("npx agentlink doctor --orphaned-config", { stdio: "inherit" });
+        execSync("npx @agentlinkdev/agentlink doctor --orphaned-config", { stdio: "inherit" });
       } catch (err) {
         console.log(pc.yellow("  ⚠ Verification failed - some orphaned entries may remain"));
       }
