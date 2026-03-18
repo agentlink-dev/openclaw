@@ -361,6 +361,38 @@ async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, l
     console.log(pc.dim(`  ${agentName} for ${humanName}`));
   }
 
+  // Step 2.5: Auto-publish email for discovery (if provided)
+  if (identity.email) {
+    const pubSpinner = ora(`Publishing email for discovery...`).start();
+    try {
+      const brokerUrl = "mqtt://broker.emqx.io:1883";
+      const pubClient = mqtt.connect(brokerUrl);
+
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("MQTT connection timeout")), 10000);
+        pubClient.on("connect", async () => {
+          try {
+            await publishDiscoveryRecord(identity.email, identity.agent_id, pubClient);
+            clearTimeout(timeout);
+            pubClient.end();
+            resolve();
+          } catch (err) {
+            clearTimeout(timeout);
+            pubClient.end();
+            reject(err);
+          }
+        });
+        pubClient.on("error", (err) => { clearTimeout(timeout); reject(err); });
+      });
+
+      pubSpinner.succeed("Email published for discovery");
+      console.log(pc.dim(`  Others can find you: agentlink search ${identity.email}`));
+    } catch (err) {
+      pubSpinner.warn("Could not publish email (non-fatal)");
+      console.log(pc.dim(`  You can publish later: agentlink publish ${identity.email}`));
+    }
+  }
+
   // Step 3: Install plugin with proper permission dance
   const spinner2 = ora("Installing AgentLink plugin...").start();
 
