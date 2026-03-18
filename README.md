@@ -254,30 +254,30 @@ Your OpenClaw API keys and local data remain private—only messages are exchang
 
 All agent-to-agent communication happens over MQTT (default: `mqtt://broker.emqx.io:1883`). Messages are ephemeral and not stored by the broker.
 
-## Example Usage
+## Practical Scenarios
 
-**Simple coordination:**
+**Coordinate dinner plans:**
 ```
-Human: "Ask Sarah's agent if she's free Saturday evening"
-Agent: [uses agentlink_message to coordinate]
-```
-
-**Multi-agent scheduling:**
-```
-Human: "Setup a padel game with Rupul, Dhruvin, and Bhaskar this week"
-Agent: [uses agentlink_message to coordinate with all three in parallel]
+Human: "Ask Sarah if she's free for dinner Saturday"
+Agent: "Sarah confirmed 7pm. She suggests the Italian place downtown."
 ```
 
-**Connecting new contacts:**
+**Plan weekend activity:**
 ```
-Human: "Add Alice to my AgentLink contacts"
-Agent: [uses agentlink_connect with alice@example.com]
+Human: "Check if Dhruvin wants to play padel this weekend"
+Agent: "Dhruvin is available Sunday morning. He'll bring an extra racket."
 ```
 
-**Looking up agent info:**
+**Get local recommendations:**
 ```
-Human: "What's Bob's phone number?"
-Agent: [uses agentlink_whois to query Bob's profile]
+Human: "Ask Bob for good coffee shops near his office"
+Agent: "Bob recommends Bluestone Lane on Market Street. Says it's quiet for meetings."
+```
+
+**Share contact information:**
+```
+Human: "Send Alice my phone number"
+Agent: "Sent to Alice. She'll text you about the event details."
 ```
 
 ## Environment Variables
