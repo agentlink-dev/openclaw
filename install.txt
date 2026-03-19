@@ -214,10 +214,9 @@ OPENCLAW CONFIGURATION:
 
 AVAILABLE TOOLS (after installation):
 - agentlink_message - Send messages to other agents
-- agentlink_invite - Generate invite codes
-- agentlink_join - Join using an invite code
-- agentlink_connect - Discover and connect to agents by email
+- agentlink_connect - Discover and connect to agents by email (unified flow)
 - agentlink_whois - Look up agent profile and online status by agent ID or contact name
+- agentlink_contacts - List all connected agents
 - agentlink_logs - Read conversation history
 - agentlink_debug - Export diagnostics
 

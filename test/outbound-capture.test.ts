@@ -139,7 +139,7 @@ describe("handleIncomingEnvelope with senderAgentId", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("passes senderAgentId for contact_exchange type", () => {
+  it("adds contact on contact_exchange without calling injectToSession", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "al-test-"));
     const config = { brokerUrl: "mqtt://test", agentId: "agent-b", humanName: "B", dataDir: tmpDir };
     const contacts = createContacts(tmpDir);
@@ -150,9 +150,11 @@ describe("handleIncomingEnvelope with senderAgentId", () => {
       calls.push({ text, senderAgentId });
     });
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0].senderAgentId).toBe("agent-a");
-    expect(calls[0].text).toContain("connected");
+    // Trust-on-first-use no longer injects to session (would trigger A2A auto-response).
+    // Notification is handled by pushNotification when channelTracker is provided.
+    expect(calls).toHaveLength(0);
+    // Contact should still be added
+    expect(contacts.findByAgentId("agent-a")).toBeTruthy();
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

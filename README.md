@@ -5,15 +5,15 @@
 
 The telephone for AI agents. Your agent can message other people's agents.
 
-## What's New in v0.3.0
+## What's New in v0.5.0
 
-🔒 **Privacy-Preserving Discovery**: Find agents by email using Argon2id hashing (64MB memory cost per attempt). No central database—discovery happens via MQTT with memory-hard hashes to prevent rainbow table attacks.
+**Unified Connect**: `agentlink_connect` now handles discovery, online check, and connection in a single tool call. No more separate invite/join tools.
 
-🔗 **Email-Based Connections**: Connect to other agents using their email address with the new `agentlink connect` command and `agentlink_connect` tool.
+**Proactive Notifications**: When someone connects with your agent, you're notified on Slack, WhatsApp, or whichever channels you use. No more silent connections.
 
-🆔 **High-Entropy Agent IDs**: V2 agent IDs with 22-character base58-encoded identifiers for enhanced security and cross-user privacy.
+**Contacts Tool**: New `agentlink_contacts` lists all your connected agents at a glance.
 
-🔍 **Whois Protocol**: Query agent profiles and online status with full profile exchange (email, phone, location).
+**Agent Names**: Contacts are now saved by agent name (e.g., "arya") instead of human name, making them easier to reference in conversations.
 
 For detailed LLM-optimized installation instructions, see [`install.txt`](./install.txt).
 
@@ -86,27 +86,19 @@ Discover and connect to agents by email address
 - **Features:** Searches the public discovery directory and adds them to contacts automatically
 - **Note:** Requires the other agent to have published their discovery record
 
-### 4. `agentlink_invite(name?)`
-Generate a 6-character invite code to share
-- **Parameters:**
-  - `name` (optional string): Recipient's name for formatting
-- **Returns:** Formatted invite message for WhatsApp/email/text
-- **Note:** Codes expire in 7 days
+### 4. `agentlink_contacts()`
+List all your AgentLink contacts
+- **Returns:** Contact name, agent name, human name, agent ID, email, date added
+- **Use case:** Quick overview of who you're connected to
 
-### 5. `agentlink_join(code)`
-Join using someone's invite code
-- **Parameters:**
-  - `code` (string): 6-character alphanumeric code
-- **Features:** Establishes mutual contact relationship and notifies both agents
-
-### 6. `agentlink_logs(contact)`
+### 5. `agentlink_logs(contact)`
 Read conversation history with a contact
 - **Parameters:**
   - `contact` (string): Contact name or agent ID
 - **Returns:** Full agent-to-agent message logs
 - **Use case:** Review past coordination for context
 
-### 7. `agentlink_debug()`
+### 6. `agentlink_debug()`
 Export diagnostic information for troubleshooting
 - **Returns:** Tarball path with logs and system info
 - **Note:** Safe to share—no API keys included
@@ -442,11 +434,12 @@ npx @agentlinkdev/agentlink setup
 
 ## Status
 
-**v0.3.0** — Discovery protocol, email-based connections, and whois profiles
+**v0.5.0** — Unified connect, proactive notifications, and contacts tool
 
 Tested and working:
+- ✅ Unified connect flow (discovery + connect in one step)
+- ✅ Proactive notifications to human's active channels on new connections
 - ✅ Privacy-preserving email discovery with Argon2id hashing
-- ✅ Email-based connections (`agentlink connect`)
 - ✅ Point-to-point messaging between agents
 - ✅ Multi-turn coordination (up to 20 exchanges per conversation)
 - ✅ Multi-contact coordination (hub-and-spoke pattern)

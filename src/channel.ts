@@ -5,6 +5,7 @@ import type { ContactsStore } from "./contacts.js";
 import type { A2ASessionManager, OriginContext } from "./a2a-session.js";
 import type { A2ALogWriter } from "./a2a-log.js";
 import type { InvitationsStore } from "./invitations.js";
+import type { ChannelTracker } from "./channel-tracker.js";
 
 // ---------------------------------------------------------------------------
 // OC Channel Runtime API types (subset used by AgentLink inbound dispatch)
@@ -197,6 +198,9 @@ export async function dispatchToSession(
                 senderAgentId,
                 responseText,
                 "auto",
+                undefined,
+                undefined,
+                config.agentName,
               );
               const topic = TOPICS.inbox(senderAgentId, config.agentId);
 
@@ -277,6 +281,72 @@ export async function sendToChannel(params: {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error(`[AgentLink] Failed to deliver to ${channel}: ${msg}`);
     throw err;
+  }
+}
+
+/**
+ * Push a notification to the human via all known messaging channels.
+ * Falls back to webchat/main session if no messaging channels are known.
+ */
+export async function pushNotification(params: {
+  message: string;
+  config: AgentLinkConfig;
+  channelTracker: ChannelTracker;
+  channelApi: ChannelApi;
+  ocConfig: Record<string, unknown>;
+  logger: Logger;
+  runtime: any;
+}): Promise<void> {
+  const channels = params.channelTracker.getMessagingChannels();
+
+  // Resolve delivery address from hook's "from" value to channel-specific "to" format.
+  // Hook "from" may include channel prefix (e.g., "slack:U0146UGUH1R").
+  // Slack/Discord DMs need "user:<id>" format.
+  function resolveDeliveryAddress(channelId: string, from: string): string {
+    // Strip channel prefix if present (e.g., "slack:U0146UGUH1R" → "U0146UGUH1R")
+    const colonIdx = from.indexOf(":");
+    const raw = colonIdx >= 0 && from.substring(0, colonIdx) === channelId
+      ? from.substring(colonIdx + 1)
+      : from;
+
+    if (channelId === "slack" || channelId === "discord") {
+      return raw.startsWith("user:") ? raw : `user:${raw}`;
+    }
+    return raw;
+  }
+
+  // Push to all known messaging channels
+  for (const [channelId, record] of Object.entries(channels)) {
+    try {
+      await sendToChannel({
+        channel: channelId,
+        to: resolveDeliveryAddress(channelId, record.from),
+        message: params.message,
+        accountId: record.accountId,
+        runtime: params.runtime,
+        cfg: params.ocConfig,
+        logger: params.logger,
+      });
+    } catch (err) {
+      params.logger.warn(`[AgentLink] Failed to push notification to ${channelId}: ${err}`);
+    }
+  }
+
+  // If no messaging channels known, dispatch to main/webchat session
+  if (Object.keys(channels).length === 0) {
+    await dispatchToSession(
+      params.message,
+      "system",
+      params.config,
+      params.channelApi,
+      params.ocConfig,
+      params.logger,
+      {
+        sessionKey: "agent:main:main",
+        targetChannel: "webchat",
+        mqttClient: undefined,
+      },
+    );
   }
 }
 
@@ -538,28 +608,32 @@ export function handleIncomingEnvelope(
   channelApi?: ChannelApi,
   ocConfig?: Record<string, unknown>,
   invitations?: InvitationsStore,
+  a2aManager?: A2ASessionManager,
+  runtime?: any,
+  channelTracker?: ChannelTracker,
 ): void {
   if (envelope.type === "contact_exchange") {
     if (envelope.ack) {
-      // This is an acknowledgment — log confirmation and notify human
+      // This is an acknowledgment — log confirmation
       logger.info(`[AgentLink] Connection confirmed with ${envelope.from_name} (${envelope.from})`);
 
-      // Update contact with capabilities from ack if available
+      // Update contact with capabilities and agent name from ack
       const existingContact = contacts.findByAgentId(envelope.from);
-      if (existingContact && envelope.capabilities && envelope.capabilities.length > 0) {
-        // Update the existing contact with capabilities
+      if (existingContact && (envelope.capabilities?.length || envelope.from_agent_name)) {
         contacts.add(
           existingContact.name,
           envelope.from,
           envelope.from_name,
-          envelope.capabilities
+          envelope.capabilities,
+          envelope.from_agent_name,
         );
-        logger.info(`[AgentLink] Updated ${envelope.from} with ${envelope.capabilities.length} capabilities`);
+        logger.info(`[AgentLink] Updated ${envelope.from} with ack data`);
       }
 
-      // Inject notification to main session
-      if (channelApi && ocConfig) {
-        const notificationText = `[AgentLink] Connection confirmed! ${envelope.from_name}'s agent (${envelope.from}) received your contact exchange.`;
+      // Relay notification to the human's origin session (async relay for ack-timeout case)
+      const originCtx = a2aManager?.getOriginContext(envelope.from);
+      if (originCtx && channelApi && ocConfig && runtime) {
+        const notificationText = `${envelope.from_name}'s agent has confirmed your connection. You can now message ${envelope.from_name}.`;
         relayToInitiatingSession(
           notificationText,
           envelope.from,
@@ -568,9 +642,14 @@ export function handleIncomingEnvelope(
           channelApi,
           ocConfig,
           logger,
+          originCtx,
+          runtime,
         ).catch((err) => {
           logger.warn(`[AgentLink] Failed to relay connection confirmation: ${err}`);
         });
+      } else {
+        // No origin context — ack was already handled synchronously in the tool call
+        logger.info(`[AgentLink] Ack from ${envelope.from} — no async relay needed (handled synchronously)`);
       }
       return;
     }
@@ -578,14 +657,16 @@ export function handleIncomingEnvelope(
     // Not an ack — process contact_exchange and send ack back
     const existingContact = contacts.findByAgentId(envelope.from);
     if (!existingContact) {
-      const name = envelope.from_name?.toLowerCase() || envelope.from;
-      contacts.add(name, envelope.from, envelope.from_name, envelope.capabilities);
-      logger.info(`[AgentLink] New contact added: ${envelope.from_name} (${envelope.from})`);
+      // Use agent name for contact name (e.g., "arya"), fall back to human name, then agent ID
+      const name = envelope.from_agent_name?.toLowerCase()
+        || envelope.from_name?.toLowerCase()
+        || envelope.from;
+      contacts.add(name, envelope.from, envelope.from_name, envelope.capabilities, envelope.from_agent_name);
+      logger.info(`[AgentLink] New contact added: ${name} — ${envelope.from_name} (${envelope.from})`);
 
       // Update any matching sent invites to "accepted" status
       if (invitations) {
         const sent = invitations.getSent();
-        // Find any pending invite (most recent one, as we don't have exact code in envelope)
         const pendingInvite = sent.find(
           inv => inv.status === "pending" && !inv.accepted_by
         );
@@ -595,10 +676,25 @@ export function handleIncomingEnvelope(
         }
       }
 
-      injectToSession(
-        `[AgentLink] ${envelope.from_name}'s agent (${envelope.from}) has connected! They are now in your contacts. You can message them anytime.`,
-        envelope.from,
-      );
+      // Trust-on-first-use: push notification to human's known channels
+      const displayName = envelope.from_agent_name
+        ? `${envelope.from_agent_name} (${envelope.from_name}'s agent)`
+        : envelope.from_name || envelope.from;
+      logger.info(`[AgentLink] Trust-on-first-use: ${displayName} connected. Saved as "${name}".`);
+
+      if (channelTracker && channelApi && ocConfig && runtime) {
+        pushNotification({
+          message: `${displayName} just connected with you. They're now in your contacts as "${name}".`,
+          config,
+          channelTracker,
+          channelApi,
+          ocConfig,
+          logger,
+          runtime,
+        }).catch((err) => {
+          logger.warn(`[AgentLink] Failed to push connect notification: ${err}`);
+        });
+      }
     }
 
     // Send ack back to sender
@@ -612,6 +708,7 @@ export function handleIncomingEnvelope(
         undefined, // origin
         undefined, // context
         config.capabilities, // capabilities
+        config.agentName, // fromAgentName
       );
       ackEnvelope.ack = true;
       const ackTopic = TOPICS.inbox(envelope.from, config.agentId);

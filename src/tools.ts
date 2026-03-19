@@ -1,11 +1,10 @@
-import type { AgentLinkConfig, AgentStatus, OpenClawPluginToolFactory, OpenClawPluginToolContext, ToolDefinition } from "./types.js";
+import type { AgentLinkConfig, AgentStatus, MessageEnvelope, OpenClawPluginToolFactory, OpenClawPluginToolContext, ToolDefinition } from "./types.js";
 import { createEnvelope, createInvitePayload, TOPICS } from "./types.js";
 import type { MqttClient, Logger } from "./mqtt-client.js";
 import type { ContactsStore } from "./contacts.js";
 import type { A2ASessionManager } from "./a2a-session.js";
 import type { A2ALogWriter } from "./a2a-log.js";
 import type { InvitationsStore } from "./invitations.js";
-import { resolveInviteCode } from "./invite.js";
 import { searchByIdentifier } from "./discovery.js";
 import mqtt from "mqtt";
 
@@ -150,7 +149,7 @@ export function createMessageTool(
         }
 
         // Build and send envelope — origin: "tool" tells receiver this is human-initiated
-        const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool", context);
+        const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool", context, undefined, config.agentName);
         const topic = TOPICS.inbox(agentId, config.agentId);
 
         try {
@@ -263,262 +262,330 @@ export function createConnectTool(
   mqttClient: MqttClient,
   contacts: ContactsStore,
   logger: Logger,
-): ToolDefinition {
-  return {
-    name: "agentlink_connect",
-    label: "AgentLink: Connect by Email",
-    description:
-      "Discover and connect to an agent by their email address. Searches the public directory for published agents and adds them to your contacts. The agent must have published their email using 'agentlink publish <email>'.",
-    parameters: {
-      type: "object",
-      required: ["email"],
-      properties: {
-        email: {
-          type: "string",
-          description: "Email address to search for (e.g., 'alice@example.com')",
-        },
-        name: {
-          type: "string",
-          description: "Contact name to save as (optional, defaults to email username)",
-        },
-        display_name: {
-          type: "string",
-          description: "Display name for the contact (optional)",
-        },
-      },
-    },
-    async execute(_id, params) {
-      const email = params.email as string;
-      const contactName = params.name as string | undefined;
-      const displayName = params.display_name as string | undefined;
-
-      if (!email) {
-        return text("Error: 'email' parameter is required.");
-      }
-
-      // Validate email format
-      if (!email.includes("@")) {
-        return text(`Error: Invalid email format: ${email}`);
-      }
-
-      logger.info(`[agentlink_connect] Searching for ${email}...`);
-
-      try {
-        // Search for agent using discovery protocol
-        // Create temporary raw MQTT client for discovery (searchByIdentifier needs raw client)
-        const rawClient = await new Promise<mqtt.MqttClient>((resolve, reject) => {
-          const client = mqtt.connect(config.brokerUrl, {
-            username: config.brokerUsername,
-            password: config.brokerPassword,
-            clientId: `agentlink-connect-${config.agentId}-${Date.now()}`,
-            clean: true,
-            connectTimeout: 10000,
-          });
-          client.on("connect", () => resolve(client));
-          client.on("error", (err) => reject(err));
-          setTimeout(() => reject(new Error("MQTT connection timeout")), 10000);
-        });
-
-        let result;
-        try {
-          result = await searchByIdentifier(
-            { identifier: email, timeoutMs: 5000 },
-            config.agentId,
-            rawClient
-          );
-        } finally {
-          rawClient.end();
-        }
-
-        if (!result.found || !result.agentId) {
-          return text(
-            `Agent not found for email: ${email}\n\n` +
-            `The agent may not have published this email to the directory.\n` +
-            `They need to run: agentlink publish ${email}`
-          );
-        }
-
-        // Check if already in contacts
-        const existing = contacts.findByAgentId(result.agentId);
-        if (existing) {
-          return text(
-            `Already connected to this agent!\n\n` +
-            `Contact name: ${existing.name}\n` +
-            `Agent ID: ${result.agentId}\n` +
-            `Email: ${email}`
-          );
-        }
-
-        // Determine contact name
-        const finalName = contactName || email.split('@')[0].toLowerCase();
-
-        // Check if name is already taken
-        if (contacts.has(finalName)) {
-          return text(
-            `Error: Contact name "${finalName}" is already in use.\n\n` +
-            `Please provide a different name using the 'name' parameter.`
-          );
-        }
-
-        // Add to contacts
-        contacts.add(finalName, result.agentId, displayName || email);
-
-        logger.info(`[agentlink_connect] Added ${email} as contact "${finalName}"`);
-
-        return text(
-          `✓ Connected to agent successfully!\n\n` +
-          `Email: ${email}\n` +
-          `Contact name: ${finalName}\n` +
-          (displayName ? `Display name: ${displayName}\n` : "") +
-          `Agent ID: ${result.agentId}\n\n` +
-          `You can now send messages using:\n` +
-          `"Send a message to ${finalName}"`
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`[agentlink_connect] Failed to connect: ${msg}`);
-        return text(`Failed to connect: ${msg}`);
-      }
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tool: agentlink_invite
-// ---------------------------------------------------------------------------
-
-export function createInviteTool(
-  config: AgentLinkConfig,
-  mqttClient: MqttClient,
-  logger: Logger,
+  a2aManager?: A2ASessionManager,
   invitations?: InvitationsStore,
 ): OpenClawPluginToolFactory {
-  // Return factory function (session context available if needed for future features)
   return (ctx: OpenClawPluginToolContext) => {
     const sessionKey = ctx.sessionKey ?? "main";
     const messageChannel = ctx.messageChannel ?? "webchat";
+    const accountId = ctx.agentAccountId ?? "default";
+    const deliveryTarget = extractDeliveryTarget(sessionKey, messageChannel);
 
     return {
-      name: "agentlink_invite",
-      label: "AgentLink: Generate Invite",
+      name: "agentlink_connect",
+      label: "AgentLink: Connect by Email",
       description:
-        "Generate a 6-character invite code that someone can use to connect their agent to yours. " +
-        "IMPORTANT: Show the tool output exactly as-is — it includes a formatted message the user can copy/paste to share. " +
-        "DO NOT summarize or paraphrase it. The formatted output is designed to be sent via WhatsApp, email, or text.",
+        "Connect with another agent by email. Searches the public directory, checks if they're online, " +
+        "and establishes a mutual connection. If the agent isn't found or is offline, generates an invite code to share instead.",
       parameters: {
         type: "object",
-        required: [],
+        required: ["email"],
         properties: {
+          email: {
+            type: "string",
+            description: "Email address to connect with (e.g., 'alice@example.com')",
+          },
           name: {
             type: "string",
-            description: "Optional: the name of the person you're inviting (for your reference)",
+            description: "Contact name to save as (optional, defaults to their agent name or email username)",
           },
         },
       },
       async execute(_id, params) {
-        const inviteName = params.name as string | undefined;
+        const email = params.email as string;
+        const contactName = params.name as string | undefined;
 
-        const invite = createInvitePayload(config.agentId, config.humanName);
-        const topic = TOPICS.invite(invite.code);
+        if (!email) {
+          return text("Error: 'email' parameter is required.");
+        }
+
+        if (!email.includes("@")) {
+          return text(`Error: Invalid email format: ${email}`);
+        }
+
+        logger.info(`[agentlink_connect] Searching for ${email}...`);
 
         try {
-          await mqttClient.publish(topic, JSON.stringify(invite), { retain: true, qos: 1 });
-          logger.info(`[AgentLink] Invite code generated: ${invite.code} from ${messageChannel}:${sessionKey}`);
+          // --- STEP 1: Discovery lookup ---
+          const rawClient = await new Promise<mqtt.MqttClient>((resolve, reject) => {
+            const client = mqtt.connect(config.brokerUrl, {
+              username: config.brokerUsername,
+              password: config.brokerPassword,
+              clientId: `agentlink-connect-${config.agentId}-${Date.now()}`,
+              clean: true,
+              connectTimeout: 10000,
+            });
+            client.on("connect", () => resolve(client));
+            client.on("error", (err) => reject(err));
+            setTimeout(() => reject(new Error("MQTT connection timeout")), 10000);
+          });
 
-          // Track the sent invite
-          if (invitations) {
-            invitations.addSent(invite.code, inviteName, invite.expires);
+          let discoveryResult;
+          try {
+            discoveryResult = await searchByIdentifier(
+              { identifier: email, timeoutMs: 5000 },
+              config.agentId,
+              rawClient
+            );
+          } finally {
+            rawClient.end();
           }
 
-          // Construct landing page URL (configurable, defaults to Vercel deployment)
-          // Use .txt extension for reliable plain text delivery to LLMs
-          const landingPageBase = config.landingPageUrl || "https://website-agentlink.vercel.app";
-          const inviteUrl = `${landingPageBase}/join/${invite.code}.txt`;
+          // --- NOT FOUND → fallback to invite ---
+          if (!discoveryResult.found || !discoveryResult.agentId) {
+            return generateFallbackInvite(config, mqttClient, logger, invitations, email);
+          }
 
-          // Detect sender/recipient names
-          const senderName = config.humanName || "sender";
-          const recipientName = inviteName || "recipient";
+          const targetAgentId = discoveryResult.agentId;
 
-          // Installation message for the recipient to paste into their OpenClaw
-          const installMessage = [
-            `Hi OpenClaw, I would like to install AgentLink. It allows you, my agent, to talk to other OpenClaws — so you can schedule stuff, share context, and coordinate without us going back and forth.`,
-            ``,
-            `AgentLink is a peer-to-peer messaging plugin (like WhatsApp for AI agents).`,
-            `No credentials shared. Messages are direct over MQTT.`,
-            ``,
-            `Get started: ${inviteUrl}`,
-            `(Takes 30 seconds)`,
-          ].join("\n");
+          // Check if already connected
+          const existing = contacts.findByAgentId(targetAgentId);
+          if (existing) {
+            return text(
+              `Already connected to this agent!\n\n` +
+              `Contact name: ${existing.name}\n` +
+              `Agent ID: ${targetAgentId}\n` +
+              `Email: ${email}`
+            );
+          }
 
-          const lines = [
-            `Here's your AgentLink invite for **${recipientName}**.`,
-            ``,
-            `───────────────────────────────────────────`,
-            ``,
-            `**Instructions for ${senderName}:** Please send the whole message below to ${recipientName}.`,
-            ``,
-            `───────────────────────────────────────────`,
-            ``,
-            `**Instructions for ${recipientName}:** Please paste the installation message below in your OpenClaw.`,
-            ``,
-            `───────────────────────────────────────────`,
-            ``,
-            installMessage,
-            ``,
-            `───────────────────────────────────────────`,
-            ``,
-            `**Invite code: ${invite.code}** (expires ${new Date(invite.expires).toLocaleDateString()})`,
-          ];
+          // --- STEP 2: Whois — check online/offline ---
+          const statusTopic = TOPICS.status(targetAgentId);
+          const agentStatus = await readRetainedMessage<AgentStatus>(mqttClient, statusTopic, 3000);
 
-          return text(lines.join("\n"));
+          const isOnline = agentStatus?.online === true;
+          const displayName = agentStatus?.human_name || email;
+          const agentName = agentStatus?.agent_name;
+          const finalName = contactName || agentName?.toLowerCase() || email.split("@")[0].toLowerCase();
+
+          // Check if name is already taken
+          if (contacts.has(finalName)) {
+            return text(
+              `Error: Contact name "${finalName}" is already in use.\n\n` +
+              `Please provide a different name using the 'name' parameter.`
+            );
+          }
+
+          // --- OFFLINE → fallback to invite ---
+          if (!isOnline) {
+            const lastSeen = agentStatus?.timestamp
+              ? new Date(agentStatus.timestamp).toLocaleString()
+              : "unknown";
+            logger.info(`[agentlink_connect] ${email} is offline (last seen: ${lastSeen}), generating invite`);
+            return generateFallbackInvite(config, mqttClient, logger, invitations, email, displayName, lastSeen);
+          }
+
+          // --- STEP 3: ONLINE → send contact_exchange + wait for ack ---
+          logger.info(`[agentlink_connect] ${email} is online, sending connection request...`);
+
+          const exchange = createEnvelope(
+            "contact_exchange",
+            config.agentId,
+            config.humanName,
+            targetAgentId,
+            undefined,
+            undefined,
+            undefined,
+            config.capabilities,
+            config.agentName,
+          );
+          const outTopic = TOPICS.inbox(targetAgentId, config.agentId);
+          await mqttClient.publish(outTopic, JSON.stringify(exchange));
+
+          // Wait for ack (subscribe to our inbox for this specific sender, 5s timeout)
+          const ack = await waitForContactAck(mqttClient, config.agentId, targetAgentId, 5000);
+
+          if (ack) {
+            // Synchronous success — add confirmed contact
+            contacts.add(finalName, targetAgentId, displayName, ack.capabilities, agentName, agentStatus?.email, agentStatus?.phone, agentStatus?.location);
+            logger.info(`[agentlink_connect] Connected with ${email} as "${finalName}" (confirmed)`);
+
+            return text(
+              `Connected with ${displayName}!\n\n` +
+              `Contact name: ${finalName}\n` +
+              (agentName ? `Agent name: ${agentName}\n` : "") +
+              `Agent ID: ${targetAgentId}\n\n` +
+              `You can now send messages to ${finalName}.`
+            );
+          }
+
+          // Ack timeout — save as pending, stash origin context for async relay
+          contacts.add(finalName, targetAgentId, displayName, undefined, agentName, agentStatus?.email, agentStatus?.phone, agentStatus?.location);
+          logger.info(`[agentlink_connect] Ack timeout for ${email}, saved as pending`);
+
+          if (a2aManager) {
+            a2aManager.setOriginContext(targetAgentId, {
+              sessionKey,
+              channel: messageChannel,
+              agentId: config.agentId,
+              to: deliveryTarget,
+              accountId,
+              timestamp: Date.now(),
+            });
+          }
+
+          return text(
+            `Connection request sent to ${displayName}.\n` +
+            `Contact saved as "${finalName}".\n` +
+            `You'll be notified when their agent confirms.`
+          );
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          logger.error(`[AgentLink] Failed to publish invite: ${msg}`);
-          return text(`Failed to generate invite: ${msg}`);
+          logger.error(`[agentlink_connect] Failed to connect: ${msg}`);
+          return text(`Failed to connect: ${msg}`);
         }
       },
     };
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tool: agentlink_join
-// ---------------------------------------------------------------------------
+/** Wait for a contact_exchange ack from a specific agent. */
+function waitForContactAck(
+  mqttClient: MqttClient,
+  myAgentId: string,
+  fromAgentId: string,
+  timeoutMs: number,
+): Promise<MessageEnvelope | null> {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const inboxTopic = TOPICS.inbox(myAgentId, fromAgentId);
 
-export function createJoinTool(
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve(null);
+      }
+    }, timeoutMs);
+
+    mqttClient.onMessage((topic, payload) => {
+      if (topic === inboxTopic && !resolved) {
+        try {
+          const env = JSON.parse(payload.toString("utf-8")) as MessageEnvelope;
+          if (env.type === "contact_exchange" && env.ack && env.from === fromAgentId) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve(env);
+          }
+        } catch {
+          // Not valid JSON, ignore
+        }
+      }
+    });
+
+    mqttClient.subscribe(inboxTopic).catch(() => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        resolve(null);
+      }
+    });
+  });
+}
+
+/** Generate a fallback invite when discovery fails or agent is offline. */
+function generateFallbackInvite(
   config: AgentLinkConfig,
   mqttClient: MqttClient,
-  contacts: ContactsStore,
   logger: Logger,
-  invitations?: InvitationsStore,
+  invitations: InvitationsStore | undefined,
+  email: string,
+  displayName?: string,
+  lastSeen?: string,
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  return (async () => {
+    const invite = createInvitePayload(config.agentId, config.humanName);
+    const inviteTopic = TOPICS.invite(invite.code);
+    await mqttClient.publish(inviteTopic, JSON.stringify(invite), { retain: true, qos: 1 });
+
+    if (invitations) {
+      invitations.addSent(invite.code, email, invite.expires);
+    }
+
+    const landingPageBase = "https://website-agentlink.vercel.app";
+    const inviteUrl = `${landingPageBase}/join/${invite.code}.txt`;
+
+    logger.info(`[agentlink_connect] Generated fallback invite ${invite.code} for ${email}`);
+
+    const senderName = config.humanName || "sender";
+
+    // Installation message for the recipient to paste into their OpenClaw
+    const installMessage = [
+      `Hi OpenClaw, I would like to install AgentLink. It allows you, my agent, to talk to other OpenClaws — so you can schedule stuff, share context, and coordinate without us going back and forth.`,
+      ``,
+      `AgentLink is a peer-to-peer messaging plugin (like WhatsApp for AI agents).`,
+      `No credentials shared. Messages are direct over MQTT.`,
+      ``,
+      `Get started: ${inviteUrl}`,
+      `(Takes 30 seconds)`,
+    ].join("\n");
+
+    let header: string;
+    if (lastSeen && displayName) {
+      header = `${displayName}'s agent is offline (last seen: ${lastSeen}).\nShare this invite so they can connect when back online:`;
+    } else {
+      header = `${email} isn't on AgentLink yet.\nShare this invite with them:`;
+    }
+
+    const lines = [
+      header,
+      ``,
+      `───────────────────────────────────────────`,
+      ``,
+      `**Instructions for ${senderName}:** Send the whole message below to ${displayName || email}.`,
+      ``,
+      `───────────────────────────────────────────`,
+      ``,
+      `**Instructions for ${displayName || email}:** Paste the message below in your OpenClaw.`,
+      ``,
+      `───────────────────────────────────────────`,
+      ``,
+      installMessage,
+      ``,
+      `───────────────────────────────────────────`,
+      ``,
+      `**Invite code: ${invite.code}** (expires ${new Date(invite.expires).toLocaleDateString()})`,
+    ];
+
+    return text(lines.join("\n"));
+  })();
+}
+
+// ---------------------------------------------------------------------------
+// Tool: agentlink_contacts
+// ---------------------------------------------------------------------------
+
+export function createContactsTool(
+  contacts: ContactsStore,
 ): ToolDefinition {
   return {
-    name: "agentlink_join",
-    label: "AgentLink: Join via Invite Code",
+    name: "agentlink_contacts",
+    label: "AgentLink: List Contacts",
     description:
-      "Join AgentLink using a 6-character invite code shared by another person. This adds them as a contact and notifies their agent so you become mutual contacts.",
+      "List your AgentLink contacts. Shows who you're connected to.",
     parameters: {
       type: "object",
-      required: ["code"],
-      properties: {
-        code: {
-          type: "string",
-          description: "The 6-character invite code (e.g., E8RRN8)",
-        },
-      },
+      required: [],
+      properties: {},
     },
-    async execute(_id, params) {
-      const code = (params.code as string)?.trim().toUpperCase();
-      if (!code) return text("Error: 'code' parameter is required.");
+    async execute(_id, _params) {
+      const all = contacts.getAll();
+      const entries = Object.entries(all);
 
-      try {
-        const result = await resolveInviteCode(code, config, mqttClient, contacts, logger, invitations);
-        return text(result.message);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error(`[AgentLink] Failed to join via invite: ${msg}`);
-        return text(`Failed to join: ${msg}`);
+      if (entries.length === 0) {
+        return text("No contacts yet. Use agentlink_connect to add someone.");
       }
+
+      const lines = [`Contacts (${entries.length}):\n`];
+      for (const [name, entry] of entries) {
+        lines.push(`- ${name}`);
+        if (entry.agent_name) lines.push(`    Agent name: ${entry.agent_name}`);
+        if (entry.human_name) lines.push(`    Human name: ${entry.human_name}`);
+        lines.push(`    Agent ID: ${entry.agent_id}`);
+        if (entry.email) lines.push(`    Email: ${entry.email}`);
+        lines.push(`    Added: ${entry.added}`);
+      }
+
+      return text(lines.join("\n"));
     },
   };
 }

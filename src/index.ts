@@ -5,7 +5,7 @@ import { resolveIdentity } from "./identity.js";
 import { createContacts } from "./contacts.js";
 import { createInvitationsStore } from "./invitations.js";
 import { createMqttService } from "./mqtt-service.js";
-import { createMessageTool, createWhoisTool, createConnectTool, createInviteTool, createJoinTool, createLogsTool, createDebugTool } from "./tools.js";
+import { createMessageTool, createWhoisTool, createConnectTool, createContactsTool, createLogsTool, createDebugTool } from "./tools.js";
 import {
   handleIncomingEnvelope,
   dispatchToSession,
@@ -16,6 +16,7 @@ import type { ChannelApi } from "./channel.js";
 import { createA2ASessionManager } from "./a2a-session.js";
 import { createA2ALogWriter } from "./a2a-log.js";
 import { resolveInviteCode } from "./invite.js";
+import { createChannelTracker } from "./channel-tracker.js";
 import type { Logger } from "./mqtt-client.js";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ interface PluginApi {
   registerTool(tool: ToolDefinition | OpenClawPluginToolFactory): void;
   registerChannel?(registration: { plugin: unknown }): void;
   registerCli?(registrar: (ctx: { program: unknown }) => void, opts?: { commands?: string[] }): void;
+  on?(hookName: string, handler: (...args: unknown[]) => unknown): void;
   runtime?: {
     channel?: ChannelApi;
   };
@@ -88,6 +90,7 @@ function register(api: PluginApi) {
   const mqttClient = mqttService.getClient();
   const a2aManager = createA2ASessionManager(api.logger);
   const logWriter = createA2ALogWriter(config.dataDir, config.agentId, config.humanName);
+  const channelTracker = createChannelTracker(config.dataDir);
 
   // ---------------------------------------------------------------------------
   // Timer management: status updates (15s/45s), no-response (60s), silence (30s)
@@ -285,6 +288,15 @@ function register(api: PluginApi) {
 
   api.logger.info(`[AgentLink] Agent: ${config.agentId} (${config.humanName})`);
 
+  // --- Hook: track human's active channels for proactive notifications ---
+  if (api.on) {
+    api.on("message_received", (event: any, ctx: any) => {
+      if (ctx?.channelId === "agentlink") return;
+      if (!event?.from) return;
+      channelTracker.record(ctx?.channelId, event.from, ctx?.accountId, ctx?.conversationId);
+    });
+  }
+
   // --- Service: background MQTT connection ---
   api.registerService({
     id: "agentlink-mqtt",
@@ -448,6 +460,9 @@ function register(api: PluginApi) {
           api.runtime?.channel,
           api.config,
           invitations,
+          a2aManager,
+          api.runtime,
+          channelTracker,
         );
       });
 
@@ -481,9 +496,8 @@ function register(api: PluginApi) {
   // --- Tools ---
   api.registerTool(createMessageTool(config, mqttClient, contacts, api.logger, a2aManager, onA2AStarted));
   api.registerTool(createWhoisTool(config, mqttClient, contacts, api.logger));
-  api.registerTool(createConnectTool(config, mqttClient, contacts, api.logger));
-  api.registerTool(createInviteTool(config, mqttClient, api.logger, invitations));
-  api.registerTool(createJoinTool(config, mqttClient, contacts, api.logger, invitations));
+  api.registerTool(createConnectTool(config, mqttClient, contacts, api.logger, a2aManager, invitations));
+  api.registerTool(createContactsTool(contacts));
   api.registerTool(createLogsTool(config, contacts, logWriter));
   api.registerTool(createDebugTool(config, api.logger));
 
