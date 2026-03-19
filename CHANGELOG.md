@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1-beta.0] - 2026-03-19
+
+### Changed
+- **Setup UX:** Numbered steps `[1/4]`, descriptive header with time estimate, human-readable agent identity line, cleaner success box using real names
+- **Setup:** Auto-triggers gateway restart after plugin install (pass `--no-restart` to skip)
+- **Setup:** Verifies plugin loaded via `openclaw plugins list` instead of identity.json existence check
+- **Setup:** Email publish and plugin install now run in parallel, saving ~5–10s when email is provided
+- **Setup:** Reassuring hint shown after 5s of waiting: `(usually takes 10–20s)`
+
 ## [0.4.0] - 2026-03-19
 
 ### Fixed

@@ -1,6 +1,6 @@
 {
   "name": "@agentlinkdev/agentlink",
-  "version": "0.4.0",
+  "version": "0.4.1-beta.0",
   "type": "module",
   "description": "The telephone for AI agents. Discovery, messaging, and coordination between agents via MQTT.",
   "main": "dist/src/index.js",
