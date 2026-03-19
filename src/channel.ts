@@ -5,6 +5,7 @@ import type { ContactsStore } from "./contacts.js";
 import type { A2ASessionManager, OriginContext } from "./a2a-session.js";
 import type { A2ALogWriter } from "./a2a-log.js";
 import type { InvitationsStore } from "./invitations.js";
+import type { ChannelTracker } from "./channel-tracker.js";
 
 // ---------------------------------------------------------------------------
 // OC Channel Runtime API types (subset used by AgentLink inbound dispatch)
@@ -284,6 +285,72 @@ export async function sendToChannel(params: {
 }
 
 /**
+ * Push a notification to the human via all known messaging channels.
+ * Falls back to webchat/main session if no messaging channels are known.
+ */
+export async function pushNotification(params: {
+  message: string;
+  config: AgentLinkConfig;
+  channelTracker: ChannelTracker;
+  channelApi: ChannelApi;
+  ocConfig: Record<string, unknown>;
+  logger: Logger;
+  runtime: any;
+}): Promise<void> {
+  const channels = params.channelTracker.getMessagingChannels();
+
+  // Resolve delivery address from hook's "from" value to channel-specific "to" format.
+  // Hook "from" may include channel prefix (e.g., "slack:U0146UGUH1R").
+  // Slack/Discord DMs need "user:<id>" format.
+  function resolveDeliveryAddress(channelId: string, from: string): string {
+    // Strip channel prefix if present (e.g., "slack:U0146UGUH1R" → "U0146UGUH1R")
+    const colonIdx = from.indexOf(":");
+    const raw = colonIdx >= 0 && from.substring(0, colonIdx) === channelId
+      ? from.substring(colonIdx + 1)
+      : from;
+
+    if (channelId === "slack" || channelId === "discord") {
+      return raw.startsWith("user:") ? raw : `user:${raw}`;
+    }
+    return raw;
+  }
+
+  // Push to all known messaging channels
+  for (const [channelId, record] of Object.entries(channels)) {
+    try {
+      await sendToChannel({
+        channel: channelId,
+        to: resolveDeliveryAddress(channelId, record.from),
+        message: params.message,
+        accountId: record.accountId,
+        runtime: params.runtime,
+        cfg: params.ocConfig,
+        logger: params.logger,
+      });
+    } catch (err) {
+      params.logger.warn(`[AgentLink] Failed to push notification to ${channelId}: ${err}`);
+    }
+  }
+
+  // If no messaging channels known, dispatch to main/webchat session
+  if (Object.keys(channels).length === 0) {
+    await dispatchToSession(
+      params.message,
+      "system",
+      params.config,
+      params.channelApi,
+      params.ocConfig,
+      params.logger,
+      {
+        sessionKey: "agent:main:main",
+        targetChannel: "webchat",
+        mqttClient: undefined,
+      },
+    );
+  }
+}
+
+/**
  * Relay a prompt into the session where the human initiated the A2A conversation.
  * The relay text is pre-formatted by the caller (e.g., consolidated summary, status prompt).
  * Uses channel-specific delivery APIs to send directly to Slack/WhatsApp/Discord/etc.
@@ -543,6 +610,7 @@ export function handleIncomingEnvelope(
   invitations?: InvitationsStore,
   a2aManager?: A2ASessionManager,
   runtime?: any,
+  channelTracker?: ChannelTracker,
 ): void {
   if (envelope.type === "contact_exchange") {
     if (envelope.ack) {
@@ -608,11 +676,25 @@ export function handleIncomingEnvelope(
         }
       }
 
-      // Trust-on-first-use: log only — do NOT inject to session (would trigger A2A auto-response)
+      // Trust-on-first-use: push notification to human's known channels
       const displayName = envelope.from_agent_name
         ? `${envelope.from_agent_name} (${envelope.from_name}'s agent)`
         : envelope.from_name || envelope.from;
       logger.info(`[AgentLink] Trust-on-first-use: ${displayName} connected. Saved as "${name}".`);
+
+      if (channelTracker && channelApi && ocConfig && runtime) {
+        pushNotification({
+          message: `${displayName} just connected with you. They're now in your contacts as "${name}".`,
+          config,
+          channelTracker,
+          channelApi,
+          ocConfig,
+          logger,
+          runtime,
+        }).catch((err) => {
+          logger.warn(`[AgentLink] Failed to push connect notification: ${err}`);
+        });
+      }
     }
 
     // Send ack back to sender
