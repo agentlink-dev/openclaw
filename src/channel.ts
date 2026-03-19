@@ -197,6 +197,9 @@ export async function dispatchToSession(
                 senderAgentId,
                 responseText,
                 "auto",
+                undefined,
+                undefined,
+                config.agentName,
               );
               const topic = TOPICS.inbox(senderAgentId, config.agentId);
 
@@ -546,16 +549,17 @@ export function handleIncomingEnvelope(
       // This is an acknowledgment — log confirmation
       logger.info(`[AgentLink] Connection confirmed with ${envelope.from_name} (${envelope.from})`);
 
-      // Update contact with capabilities from ack if available
+      // Update contact with capabilities and agent name from ack
       const existingContact = contacts.findByAgentId(envelope.from);
-      if (existingContact && envelope.capabilities && envelope.capabilities.length > 0) {
+      if (existingContact && (envelope.capabilities?.length || envelope.from_agent_name)) {
         contacts.add(
           existingContact.name,
           envelope.from,
           envelope.from_name,
-          envelope.capabilities
+          envelope.capabilities,
+          envelope.from_agent_name,
         );
-        logger.info(`[AgentLink] Updated ${envelope.from} with ${envelope.capabilities.length} capabilities`);
+        logger.info(`[AgentLink] Updated ${envelope.from} with ack data`);
       }
 
       // Relay notification to the human's origin session (async relay for ack-timeout case)
@@ -585,9 +589,12 @@ export function handleIncomingEnvelope(
     // Not an ack — process contact_exchange and send ack back
     const existingContact = contacts.findByAgentId(envelope.from);
     if (!existingContact) {
-      const name = envelope.from_name?.toLowerCase() || envelope.from;
-      contacts.add(name, envelope.from, envelope.from_name, envelope.capabilities);
-      logger.info(`[AgentLink] New contact added: ${envelope.from_name} (${envelope.from})`);
+      // Use agent name for contact name (e.g., "arya"), fall back to human name, then agent ID
+      const name = envelope.from_agent_name?.toLowerCase()
+        || envelope.from_name?.toLowerCase()
+        || envelope.from;
+      contacts.add(name, envelope.from, envelope.from_name, envelope.capabilities, envelope.from_agent_name);
+      logger.info(`[AgentLink] New contact added: ${name} — ${envelope.from_name} (${envelope.from})`);
 
       // Update any matching sent invites to "accepted" status
       if (invitations) {
@@ -601,11 +608,11 @@ export function handleIncomingEnvelope(
         }
       }
 
-      // Trust-on-first-use notification — no block mention (not implemented yet)
-      injectToSession(
-        `[AgentLink] ${envelope.from_name}'s agent just connected with you. They're now in your contacts.\nYou can say "message ${envelope.from_name?.toLowerCase() || "them"}" to start a conversation.`,
-        envelope.from,
-      );
+      // Trust-on-first-use: log only — do NOT inject to session (would trigger A2A auto-response)
+      const displayName = envelope.from_agent_name
+        ? `${envelope.from_agent_name} (${envelope.from_name}'s agent)`
+        : envelope.from_name || envelope.from;
+      logger.info(`[AgentLink] Trust-on-first-use: ${displayName} connected. Saved as "${name}".`);
     }
 
     // Send ack back to sender
@@ -619,6 +626,7 @@ export function handleIncomingEnvelope(
         undefined, // origin
         undefined, // context
         config.capabilities, // capabilities
+        config.agentName, // fromAgentName
       );
       ackEnvelope.ack = true;
       const ackTopic = TOPICS.inbox(envelope.from, config.agentId);

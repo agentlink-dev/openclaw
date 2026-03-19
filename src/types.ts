@@ -77,6 +77,7 @@ export interface MessageEnvelope {
   type: MessageType;
   from: string;
   from_name: string;
+  from_agent_name?: string; // Sender's agent name (e.g., "Arya")
   to: string;
   text?: string; // Message body
   capabilities?: string[]; // Agent capabilities (for contact_exchange)
@@ -95,11 +96,13 @@ export function createEnvelope(
   origin?: "tool" | "auto",
   context?: "ask" | "tell",
   capabilities?: string[],
+  fromAgentName?: string,
 ): MessageEnvelope {
   return {
     type,
     from,
     from_name: fromName,
+    from_agent_name: fromAgentName,
     to,
     text,
     origin,

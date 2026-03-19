@@ -149,7 +149,7 @@ export function createMessageTool(
         }
 
         // Build and send envelope — origin: "tool" tells receiver this is human-initiated
-        const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool", context);
+        const envelope = createEnvelope("message", config.agentId, config.humanName, agentId, messageText, "tool", context, undefined, config.agentName);
         const topic = TOPICS.inbox(agentId, config.agentId);
 
         try {
@@ -387,6 +387,7 @@ export function createConnectTool(
             undefined,
             undefined,
             config.capabilities,
+            config.agentName,
           );
           const outTopic = TOPICS.inbox(targetAgentId, config.agentId);
           await mqttClient.publish(outTopic, JSON.stringify(exchange));
@@ -547,6 +548,46 @@ function generateFallbackInvite(
 
     return text(lines.join("\n"));
   })();
+}
+
+// ---------------------------------------------------------------------------
+// Tool: agentlink_contacts
+// ---------------------------------------------------------------------------
+
+export function createContactsTool(
+  contacts: ContactsStore,
+): ToolDefinition {
+  return {
+    name: "agentlink_contacts",
+    label: "AgentLink: List Contacts",
+    description:
+      "List your AgentLink contacts. Shows who you're connected to.",
+    parameters: {
+      type: "object",
+      required: [],
+      properties: {},
+    },
+    async execute(_id, _params) {
+      const all = contacts.getAll();
+      const entries = Object.entries(all);
+
+      if (entries.length === 0) {
+        return text("No contacts yet. Use agentlink_connect to add someone.");
+      }
+
+      const lines = [`Contacts (${entries.length}):\n`];
+      for (const [name, entry] of entries) {
+        lines.push(`- ${name}`);
+        if (entry.agent_name) lines.push(`    Agent name: ${entry.agent_name}`);
+        if (entry.human_name) lines.push(`    Human name: ${entry.human_name}`);
+        lines.push(`    Agent ID: ${entry.agent_id}`);
+        if (entry.email) lines.push(`    Email: ${entry.email}`);
+        lines.push(`    Added: ${entry.added}`);
+      }
+
+      return text(lines.join("\n"));
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
