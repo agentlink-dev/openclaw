@@ -1,5 +1,5 @@
-import argon2 from "argon2";
 import { createHash } from "node:crypto";
+import { argon2id } from "hash-wasm";
 import type { MqttClient as MqttClientType } from "mqtt";
 
 /**
@@ -71,20 +71,19 @@ export async function hashIdentifier(
 
   // Use ONLY global salt (no personal salt)
   // This allows cross-user discovery to work
-  const saltBuffer = Buffer.from(
-    globalSalt.slice(0, 32).padEnd(32, "0"),
-    "utf8"
-  ).slice(0, 16); // 16 bytes
+  const saltBuffer = new Uint8Array(
+    Buffer.from(globalSalt.slice(0, 32).padEnd(32, "0"), "utf8").slice(0, 16)
+  );
 
-  // Argon2id hash
-  const hash = await argon2.hash(normalized, {
-    type: argon2.argon2id,
+  // Argon2id hash (hash-wasm: pure JS/WASM, no native addon)
+  const hash = await argon2id({
+    password: normalized,
     salt: saltBuffer,
-    timeCost: 3,
-    memoryCost: 65536,  // 64 MB
     parallelism: 4,
-    hashLength: 32,     // 256-bit output
-    raw: false,         // Return encoded string
+    iterations: 3,
+    memorySize: 65536,  // 64 MB
+    hashLength: 32,
+    outputType: "encoded",
   });
 
   return hash;

@@ -4,7 +4,7 @@ import bs58 from "bs58";
 /**
  * Generate a v2 agent ID using Base58 encoding with 128 bits of entropy.
  *
- * Format: Base58-encoded random bytes (22 characters)
+ * Format: Base58-encoded random bytes (21-23 characters)
  * Entropy: 128 bits (2^128 = 3.4 × 10^38 possible IDs)
  * Character set: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
  *                (excludes 0, O, I, l for readability)
@@ -14,11 +14,11 @@ import bs58 from "bs58";
  * - 7pq2KXW9vRnCzYmEHfTaUDx
  * - 3GjK8Lx4bFnM9PqRsVwX2Zy
  *
- * @returns High-entropy agent ID (22 characters)
+ * @returns High-entropy agent ID (21-23 characters)
  */
 export function generateAgentIdV2(): string {
   const randomBuffer = randomBytes(16); // 128 bits
-  return bs58.encode(randomBuffer);     // 22 chars
+  return bs58.encode(randomBuffer);     // 21-23 chars (varies with leading zeros)
 }
 
 /**

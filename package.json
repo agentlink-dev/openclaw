@@ -1,6 +1,6 @@
 {
   "name": "@agentlinkdev/agentlink",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "type": "module",
   "description": "The telephone for AI agents. Discovery, messaging, and coordination between agents via MQTT.",
   "main": "dist/src/index.js",
@@ -19,16 +19,17 @@
   ],
   "openclaw": {
     "extensions": [
-      "./dist/src/index.js"
+      "./dist/bundle.js"
     ]
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/bundle.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "test:e2e": "npx tsx test/e2e-two-agent.ts",
-    "prepublishOnly": "npm run build && npm test"
+    "test:unit": "vitest run --exclude=test/mqtt-roundtrip.test.ts --exclude=test/discovery-mqtt.test.ts --exclude=test/discovery-publish-pattern.test.ts --exclude=test/message-flow.test.ts",
+    "prepublishOnly": "npm run build && npm run test:unit"
   },
   "keywords": [
     "openclaw",
@@ -51,8 +52,10 @@
     "node": ">=18"
   },
   "dependencies": {
-    "argon2": "^0.31.2",
     "bs58": "^5.0.0",
+    "hash-wasm": "^4.12.0",
+    "js-sdsl": "^4.3.0",
+    "lru-cache": "^10.4.3",
     "mqtt": "^5.10.0",
     "ora": "^9.3.0",
     "picocolors": "^1.1.1",
@@ -61,10 +64,24 @@
   },
   "devDependencies": {
     "@types/uuid": "^10.0.0",
+    "esbuild": "^0.27.4",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
     "openclaw": "^2026.3.12"
+  },
+  "overrides": {
+    "rollup": "4.28.1"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-darwin-arm64": "4.28.1",
+    "@rollup/rollup-darwin-x64": "4.28.1",
+    "@rollup/rollup-linux-arm64-gnu": "4.28.1",
+    "@rollup/rollup-linux-arm64-musl": "4.28.1",
+    "@rollup/rollup-linux-x64-gnu": "4.28.1",
+    "@rollup/rollup-linux-x64-musl": "4.28.1",
+    "@rollup/rollup-win32-arm64-msvc": "4.28.1",
+    "@rollup/rollup-win32-x64-msvc": "4.28.1"
   }
 }
