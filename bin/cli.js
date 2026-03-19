@@ -8,7 +8,7 @@
  * npx @agentlinkdev/agentlink uninstall       — Remove plugin (preserves identity)
  */
 
-import { execSync, spawn } from "node:child_process";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -188,76 +188,59 @@ function detectIdentity() {
   };
 }
 
-async function waitForGatewayRestart(maxWaitSeconds = 60, autoRestart = false) {
+async function waitForGatewayRestart(maxWaitSeconds = 60) {
   const gatewayUrl = "ws://127.0.0.1:18789"; // TODO: Detect port from config
   const startTime = Date.now();
   const maxWaitMs = maxWaitSeconds * 1000;
 
-  if (autoRestart) {
-    const restartSpinner = ora("Restarting gateway...").start();
-    try {
-      execSync("openclaw gateway stop", { stdio: "pipe", timeout: 10000 });
-    } catch {
-      // Ignore — gateway may not have been running
-    }
-    // Start gateway in background (detached so it outlives this process)
-    const child = spawn("openclaw", ["gateway"], {
-      detached: true,
-      stdio: "ignore",
-      shell: false,
-    });
-    child.unref();
-    restartSpinner.succeed("Gateway restart triggered");
-  } else {
-    console.log(pc.dim(`\n  [4/${4}] Waiting for gateway restart (max ${maxWaitSeconds}s)...`));
-    console.log(pc.dim(`  Restart your gateway, then AgentLink will load automatically.`));
-    console.log(pc.dim(`  In Docker/managed environments this happens automatically.`));
-  }
+  console.log(pc.dim(`\nWaiting for gateway restart (max ${maxWaitSeconds}s)...`));
+  console.log(pc.dim(`You can manually restart with: openclaw gateway stop && openclaw gateway`));
 
   const spinner = ["|", "/", "-", "\\"];
   let spinnerIdx = 0;
-  let lastGatewayUp = false;
 
   while (Date.now() - startTime < maxWaitMs) {
     try {
       const ws = new WebSocket(gatewayUrl);
 
-      const gatewayUp = await new Promise((resolve) => {
-        const timeout = setTimeout(() => { ws.terminate(); resolve(false); }, 2000);
-        ws.on("open", () => { clearTimeout(timeout); ws.close(); resolve(true); });
-        ws.on("error", () => { clearTimeout(timeout); resolve(false); });
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("timeout")), 2000);
+
+        ws.on('open', () => {
+          clearTimeout(timeout);
+          ws.close();
+          resolve(true);
+        });
+
+        ws.on('error', () => {
+          clearTimeout(timeout);
+          reject(new Error("connection failed"));
+        });
       });
 
-      if (gatewayUp) {
-        if (!lastGatewayUp) {
-          // Gateway just came up — wait briefly for plugins to finish loading
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        }
+      // Gateway is up!
+      console.log(pc.green(`\n✓ Gateway restarted successfully`));
 
-        // Verify agentlink actually loaded via plugins list
-        try {
-          const listOutput = execSync("openclaw plugins list", { encoding: "utf-8", stdio: "pipe" });
-          if (listOutput.includes("agentlink")) {
-            console.log(pc.green(`\n✓ Gateway restarted and AgentLink plugin loaded`));
-            return true;
-          }
-        } catch {
-          // plugins list failed, fall through and keep waiting
-        }
+      // Wait a bit for plugin to load
+      await new Promise(resolve => setTimeout(resolve, 2000));
 
-        lastGatewayUp = true;
-      } else {
-        lastGatewayUp = false;
+      // Verify AgentLink actually loaded via plugins list
+      try {
+        const listOutput = execSync("openclaw plugins list", { encoding: "utf-8", stdio: "pipe" });
+        if (listOutput.includes("agentlink")) {
+          console.log(pc.green(`✓ AgentLink plugin loaded`));
+          return true;
+        }
+      } catch {
+        // plugins list failed, keep waiting
       }
-    } catch {
-      lastGatewayUp = false;
-    }
 
-    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    const hint = elapsed > 5 ? pc.dim("  (usually takes 10–20s)") : "";
-    process.stdout.write(`\r${spinner[spinnerIdx % 4]} Waiting for AgentLink to load... (${elapsed}s)${hint}`);
-    spinnerIdx++;
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    } catch (err) {
+      // Not ready yet, keep waiting
+      process.stdout.write(`\r${spinner[spinnerIdx % 4]} Waiting... (${Math.floor((Date.now() - startTime) / 1000)}s)`);
+      spinnerIdx++;
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Poll every 2s
+    }
   }
 
   // Timeout reached
@@ -266,34 +249,30 @@ async function waitForGatewayRestart(maxWaitSeconds = 60, autoRestart = false) {
   return false;
 }
 
-async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, locationArg, jsonOutput, autoRestart = false) {
-  const STEPS = 4;
-  const step = (n, label) => pc.dim(`[${n}/${STEPS}]`) + " " + label;
+async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, locationArg, jsonOutput) {
+  console.log("\n" + pc.bold("  AgentLink Setup") + "\n");
 
-  console.log("\n" + pc.bold("  AgentLink Setup") + pc.dim("  ~30 seconds"));
-  console.log(pc.dim("  Connects your AI agent to other agents over MQTT.\n"));
-
-  // ── Step 1: Check for OpenClaw ──────────────────────────────────────────────
-  const spinner1 = ora(step(1, "Checking for OpenClaw...")).start();
+  // Step 1: Check for OpenClaw
+  const spinner1 = ora("Checking for OpenClaw...").start();
   let ocPath;
   try {
     ocPath = execSync("which openclaw", { stdio: "pipe", encoding: "utf-8" }).trim();
-    spinner1.succeed(step(1, `OpenClaw found`));
+    spinner1.succeed(`OpenClaw found: ${pc.dim(ocPath)}`);
   } catch {
-    spinner1.fail(step(1, "OpenClaw not found"));
-    console.error(pc.red("\n  OpenClaw is required but wasn't found on PATH."));
-    console.error(pc.dim("  Install it first: https://openclaw.ai\n"));
+    spinner1.fail("OpenClaw not found");
+    console.error(pc.red("\n  Error: 'openclaw' CLI not found on PATH."));
+    console.error(pc.dim("  Install OpenClaw first: https://openclaw.ai\n"));
     process.exit(1);
   }
 
-  // ── Step 2: Identity ────────────────────────────────────────────────────────
+  // Step 2: Check/generate identity
   fs.mkdirSync(DATA_DIR, { recursive: true });
 
   const detected = detectIdentity();
   let identity;
 
   if (detected?.existing) {
-    console.log(pc.green(`  [2/${STEPS}] ✓ Using existing agent`) + pc.dim(` — ${detected.agent_name} for ${detected.human_name}`));
+    console.log(pc.green(`  ✓ Existing identity: ${detected.agent_id} (${detected.agent_name} for ${detected.human_name})`));
     identity = detected;
   } else {
     let humanName;
@@ -302,32 +281,64 @@ async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, l
     let phone;
     let location;
 
+    // Check if CLI arguments were provided (non-interactive mode)
     const isNonInteractive = humanNameArg || agentNameArg || emailArg || joinCode;
 
     if (isNonInteractive) {
+      // Use CLI args, then detected values, then defaults
       humanName = humanNameArg || detected.humanName || os.userInfo().username || "User";
       agentName = agentNameArg || detected.agentName || "Agent";
       email = emailArg || detected.email;
       phone = phoneArg || detected.phone;
       location = locationArg || detected.location;
+
+      console.log(pc.dim(`  Auto-configuring...`));
+      if (humanNameArg) {
+        console.log(pc.dim(`  Human name: ${humanName} (from --human-name)`));
+      } else if (detected.humanName) {
+        console.log(pc.dim(`  Human name: ${humanName} (from ${detected.humanNameSource})`));
+      } else {
+        console.log(pc.dim(`  Human name: ${humanName} (using system username)`));
+      }
+
+      if (agentNameArg) {
+        console.log(pc.dim(`  Agent name: ${agentName} (from --agent-name)`));
+      } else if (detected.agentName) {
+        console.log(pc.dim(`  Agent name: ${agentName} (from ${detected.agentNameSource})`));
+      } else {
+        console.log(pc.dim(`  Agent name: ${agentName} (using default)`));
+      }
+      if (emailArg) {
+        console.log(pc.dim(`  Email: ${email} (from --email)`));
+      } else if (detected.email) {
+        console.log(pc.dim(`  Email: ${email} (from identity.json)`));
+      }
+
+      if (phoneArg) {
+        console.log(pc.dim(`  Phone: ${phone} (from --phone)`));
+      }
+
+      if (locationArg) {
+        console.log(pc.dim(`  Location: ${location} (from --location)`));
+      }
     } else {
-      // Interactive mode
+      // Interactive mode - ask for confirmation/input
       if (detected.humanName) {
-        console.log(pc.dim(`\n  Detected: ${pc.bold(detected.humanName)} (from ${detected.humanNameSource})`));
-        const answer = await ask(`  Your name (Enter to confirm, or type to change): `);
+        console.log(pc.dim(`\n  Detected from ${detected.humanNameSource}: ${pc.bold(detected.humanName)}`));
+        const answer = await ask(`  Your name (press Enter to confirm, or type to change): `);
         humanName = answer || detected.humanName;
       } else {
-        humanName = await ask("\n  Your name: ");
+        humanName = await ask("\n  What's your name? ");
       }
 
       if (!humanName) {
-        console.error(pc.red("  Name is required.\n"));
+        console.error(pc.red("  Your name is required.\n"));
         process.exit(1);
       }
 
       if (detected.agentName) {
-        console.log(pc.dim(`\n  Detected agent name: ${pc.bold(detected.agentName)} (from ${detected.agentNameSource})`));
-        const answer = await ask(`  Agent name (Enter to confirm, or type to change): `);
+        console.log(pc.dim(`\n  Detected from ${detected.agentNameSource}: ${pc.bold(detected.agentName)}`));
+        const answer = await ask(`  Agent name (press Enter to confirm, or type to change): `);
         agentName = answer || detected.agentName;
       } else {
         agentName = await ask("\n  What should your agent be called? ");
@@ -340,14 +351,20 @@ async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, l
     }
 
     const agentId = generateAgentIdV2();
-    identity = { agent_id: agentId, human_name: humanName, agent_name: agentName, email, phone, location };
+    identity = {
+      agent_id: agentId,
+      human_name: humanName,
+      agent_name: agentName,
+      email,
+      phone,
+      location
+    };
     fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2) + "\n");
-    console.log(pc.green(`  [2/${STEPS}] ✓ Agent created`) + pc.dim(` — "${agentName}" for ${humanName} (${agentId.slice(0, 8)}…)`));
-    if (email) console.log(pc.dim(`         Email: ${email}`));
+    console.log(pc.green(`  ✓ Agent ID: ${agentId}`));
+    console.log(pc.dim(`  ${agentName} for ${humanName}`));
   }
 
-  // ── Steps 3a + 3b (parallel): email publish + plugin install ────────────────
-  console.log("");
+  // Step 2.5 + Step 3 in parallel: email publish and plugin install
   const emailPublishPromise = identity.email
     ? (async () => {
         try {
@@ -376,25 +393,33 @@ async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, l
       })()
     : Promise.resolve(null);
 
-  const spinner3 = ora(step(3, "Installing plugin...")).start();
+  // Step 3: Install plugin with proper permission dance
+  const spinner2 = ora("Installing AgentLink plugin...").start();
 
   try {
+    // Read config
     let config = {};
     if (fs.existsSync(OC_CONFIG_PATH)) {
       config = JSON.parse(fs.readFileSync(OC_CONFIG_PATH, "utf-8"));
     }
 
+    // Save current plugins.allow (if exists)
     const hadPluginsAllow = config.plugins?.allow;
 
-    // Temporarily remove plugins.allow to avoid chicken-and-egg block
+    // Temporarily remove plugins.allow to avoid chicken-and-egg
     if (config.plugins?.allow) {
       delete config.plugins.allow;
       fs.writeFileSync(OC_CONFIG_PATH, JSON.stringify(config, null, 2));
     }
 
+    // Install plugin
     try {
-      execSync("openclaw plugins install @agentlinkdev/agentlink", { stdio: "pipe", encoding: "utf-8" });
+      execSync("openclaw plugins install @agentlinkdev/agentlink", {
+        stdio: "pipe",
+        encoding: "utf-8"
+      });
     } catch (installErr) {
+      // Restore plugins.allow before failing
       if (hadPluginsAllow && fs.existsSync(OC_CONFIG_PATH)) {
         const restoreConfig = JSON.parse(fs.readFileSync(OC_CONFIG_PATH, "utf-8"));
         if (!restoreConfig.plugins) restoreConfig.plugins = {};
@@ -404,31 +429,44 @@ async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, l
       throw installErr;
     }
 
+    // Re-read config (plugin install may have modified it)
     config = JSON.parse(fs.readFileSync(OC_CONFIG_PATH, "utf-8"));
 
+    // Re-add plugins.allow (merge with existing, don't overwrite)
     if (!config.plugins) config.plugins = {};
     if (!config.plugins.allow) config.plugins.allow = [];
-    if (!config.plugins.allow.includes("agentlink")) config.plugins.allow.push("agentlink");
+    if (!config.plugins.allow.includes("agentlink")) {
+      config.plugins.allow.push("agentlink");
+    }
+    // Restore any previously existing entries that were removed
     if (hadPluginsAllow) {
       for (const p of hadPluginsAllow) {
-        if (!config.plugins.allow.includes(p)) config.plugins.allow.push(p);
+        if (!config.plugins.allow.includes(p)) {
+          config.plugins.allow.push(p);
+        }
       }
     }
 
+    // Add tools.alsoAllow (CRITICAL: not tools.allow)
     if (!config.tools) config.tools = {};
     if (!config.tools.alsoAllow) config.tools.alsoAllow = [];
-    if (!config.tools.alsoAllow.includes("agentlink")) config.tools.alsoAllow.push("agentlink");
+    if (!config.tools.alsoAllow.includes("agentlink")) {
+      config.tools.alsoAllow.push("agentlink");
+    }
 
+    // Always configure plugin data_dir to match CLI's DATA_DIR
     if (!config.plugins.entries) config.plugins.entries = {};
     if (!config.plugins.entries.agentlink) config.plugins.entries.agentlink = {};
     if (!config.plugins.entries.agentlink.config) config.plugins.entries.agentlink.config = {};
     config.plugins.entries.agentlink.config.data_dir = DATA_DIR;
 
     fs.writeFileSync(OC_CONFIG_PATH, JSON.stringify(config, null, 2));
-    spinner3.succeed(step(3, "Plugin installed and permissions configured"));
+    spinner2.succeed("Plugin installed");
+    console.log(pc.green("  ✓ Permissions configured"));
   } catch (err) {
-    spinner3.fail(step(3, "Plugin installation failed"));
-    console.error(pc.red(`\n  ${err.message}\n`));
+    spinner2.fail("Plugin installation failed");
+    console.error(pc.red("\n  Error during plugin install:"));
+    console.error(pc.dim(`  ${err.message}\n`));
     process.exit(1);
   }
 
@@ -436,15 +474,16 @@ async function setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, l
   const emailResult = await emailPublishPromise;
   if (emailResult !== null) {
     if (emailResult.ok) {
-      console.log(pc.green(`  ✓ Published to discovery`) + pc.dim(` — others can find you: agentlink search ${identity.email}`));
+      console.log(pc.green(`  ✓ Email published for discovery`));
+      console.log(pc.dim(`  Others can find you: agentlink search ${identity.email}`));
     } else {
-      console.log(pc.yellow(`  ⚠ Could not publish email`) + pc.dim(` — run later: agentlink publish ${identity.email}`));
+      console.log(pc.yellow(`  ⚠ Could not publish email (non-fatal)`));
+      console.log(pc.dim(`  You can publish later: agentlink publish ${identity.email}`));
     }
   }
 
-  // ── Step 4: Restart gateway + verify plugin loaded ──────────────────────────
-  console.log("");
-  const restarted = await waitForGatewayRestart(60, autoRestart);
+  // Step 3.5: Watch for gateway restart
+  const restarted = await waitForGatewayRestart(60);
 
   // Store pending join code for the plugin to pick up on gateway start
   if (joinCode) {
@@ -2282,9 +2321,7 @@ if (command === "setup") {
   const jsonIdx = args.indexOf("--json");
   const jsonOutput = jsonIdx >= 0;
 
-  const autoRestart = args.includes("--restart");
-
-  setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, locationArg, jsonOutput, autoRestart);
+  setup(joinCode, humanNameArg, agentNameArg, emailArg, phoneArg, locationArg, jsonOutput);
 } else if (command === "invite") {
   const recipientIdx = args.indexOf("--recipient-name");
   const recipientName = recipientIdx >= 0 ? args[recipientIdx + 1] : undefined;
@@ -2345,7 +2382,7 @@ if (command === "setup") {
 } else {
   console.log("\n" + pc.bold("  AgentLink CLI") + "\n");
   console.log("  Commands:");
-  console.log("    " + pc.cyan("agentlink setup [--join CODE] [--human-name NAME] [--agent-name NAME] [--email EMAIL] [--phone PHONE] [--location LOCATION] [--restart] [--json]"));
+  console.log("    " + pc.cyan("agentlink setup [--join CODE] [--human-name NAME] [--agent-name NAME] [--email EMAIL] [--phone PHONE] [--location LOCATION] [--json]"));
   console.log("      " + pc.dim("Set up AgentLink and optionally join with an invite code\n"));
   console.log("    " + pc.cyan("agentlink init [--human-name NAME] [--agent-name NAME] [--email EMAIL] [--phone PHONE] [--location LOCATION]"));
   console.log("      " + pc.dim("Initialize AgentLink identity (generates v2 agent ID)\n"));
