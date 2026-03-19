@@ -356,6 +356,35 @@ Point your `openclaw.json` at the local repo:
 
 ## Troubleshooting
 
+### Plugin Fails to Load: "Cannot find module '...'"
+
+This should not happen with v0.3.9+. All dependencies are bundled into a single self-contained file (`dist/bundle.js`) — no `node_modules/` required in the plugin directory.
+
+If you are on an older version, reinstall:
+
+```bash
+openclaw plugins install @agentlinkdev/agentlink
+openclaw gateway stop && openclaw gateway
+```
+
+### plugins.allow warning
+
+If you see `plugins.allow is empty; discovered non-bundled plugins may auto-load`, add agentlink explicitly to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "allow": ["agentlink"],
+    "entries": {
+      "agentlink": { "enabled": true }
+    }
+  },
+  "tools": { "alsoAllow": ["agentlink"] }
+}
+```
+
+The `npx @agentlinkdev/agentlink setup` command does this automatically.
+
 ### Gateway Not Restarting
 
 If AgentLink setup hangs waiting for gateway restart:
@@ -409,6 +438,7 @@ To completely reset and reinstall:
 agentlink uninstall
 npx @agentlinkdev/agentlink setup
 ```
+
 
 ## Status
 

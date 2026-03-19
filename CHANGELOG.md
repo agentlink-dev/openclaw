@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-19
+
+### Fixed
+- **Plugin loading:** All npm dependencies are now bundled into `dist/bundle.js` via esbuild, eliminating "Cannot find module" errors in Docker/staging environments. npm always strips `node_modules/` from published tarballs regardless of `files`; bundling is the only reliable solution.
+- **Discovery:** Replaced `argon2` (native C addon) with `hash-wasm` (pure JS/WASM) — no postinstall builds, no native binaries, works in all environments including Docker containers.
+- **Base58 ID length:** `isValidAgentIdV2` and tests now correctly accept 21–23 character IDs; Base58 encoding of 16 bytes varies with leading zero bytes.
+
+### Changed
+- **Build:** `tsc` for type checking + esbuild bundle step produces `dist/bundle.js` (all deps inlined, only Node built-ins external).
+- **Extension entry:** `./dist/bundle.js` (was `./dist/src/index.js`).
+- **CJS interop:** esbuild banner injects `createRequire` so CJS deps (`mqtt`, `ws`) that use dynamic `require()` work inside the ESM bundle.
+
+### Removed
+- `argon2` dependency (replaced by `hash-wasm`)
+
 ## [0.3.0] - 2026-03-18
 
 ### Added

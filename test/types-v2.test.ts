@@ -6,9 +6,10 @@ import {
 } from "../src/types-v2.js";
 
 describe("generateAgentIdV2", () => {
-  it("generates 22-character Base58 IDs", () => {
+  it("generates 21-23 character Base58 IDs", () => {
     const id = generateAgentIdV2();
-    expect(id).toHaveLength(22);
+    expect(id.length).toBeGreaterThanOrEqual(21);
+    expect(id.length).toBeLessThanOrEqual(23);
     expect(isValidAgentIdV2(id)).toBe(true);
   });
 
