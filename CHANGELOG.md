@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-03-19
+
+### Changed
+- **Setup:** Reverted auto-restart to simple polling; gateway max wait reduced from 120s → 60s
+- **Setup:** Plugin loaded check now uses `openclaw plugins list` instead of identity.json existence (accurate confirmation)
+- **Setup:** Email publish runs in parallel with plugin install, saving ~5–10s when email is provided
+
 ## [0.4.1] - 2026-03-19
 
 ### Changed
