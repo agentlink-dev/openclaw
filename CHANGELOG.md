@@ -9,42 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.6] - 2026-03-20
 
-### Fixed
-- **Setup:** Skip `openclaw plugins install` entirely. That command runs a full `npm install` for the plugin's dependencies, consuming ~200MB+ and getting OOM-killed in Docker. The AgentLink plugin ships as a self-contained bundle (`dist/bundle.js`) with no runtime dependencies, so the install is unnecessary. Setup now copies only the three files OpenClaw needs (`openclaw.plugin.json`, `package.json`, `dist/bundle.js`) from the current package (already on disk via npx) directly into `~/.openclaw/extensions/agentlink/`. No npm, no network, no memory spike.
-
-## [0.5.5] - 2026-03-20
+> Supersedes 0.5.1–0.5.5, which were iterative test publishes during validation.
 
 ### Fixed
-- **Setup:** Added symlink fallback for `openclaw plugins install` OOM kills in Docker/low-memory environments. When the primary install is killed (the install command spawns npm which uses ~200MB+), setup now symlinks the current package directory (already on disk from npx) into `~/.openclaw/extensions/agentlink/` — zero extra memory, zero network. Config (`tools.alsoAllow`, `plugins.allow`, `data_dir`) is always written after plugin files land, regardless of which install path ran.
-
-## [0.5.4] - 2026-03-20
-
-### Changed
-- **Setup:** Reverted `setup` and `waitForGatewayRestart` to the v0.5.0 implementation which was confirmed working. The config ordering experiments in 0.5.2/0.5.3 introduced new failure modes; the original flow is more reliable.
-
-## [0.5.3] - 2026-03-20
-
-### Fixed
-- **Setup:** Corrected config write ordering to avoid both failure modes:
-  - 0.5.2 introduced a new problem: writing `plugins.allow` before plugin files existed caused OpenClaw to reject the install (it validates plugin files exist when `plugins.allow` references them)
-  - Now uses a 3-phase approach: (1) write `tools.alsoAllow` + `plugins.entries` first (no file validation), (2) run install to copy files, (3) write `plugins.allow` after files are on disk
-
-## [0.5.2] - 2026-03-20
-
-### Fixed
-- **Setup:** Config (`tools.alsoAllow`, `plugins.allow`, `plugins.entries`) is now written to disk **before** `openclaw plugins install` runs. Previously, a hung or timed-out install would leave the config unwritten, requiring manual intervention to add `tools.alsoAllow`. Now even if install errors/times out, the config is already correct for the next gateway restart.
-- **Setup:** Removed the `plugins.allow` temporary-removal dance — no longer needed since config is written first with `agentlink` already present in `plugins.allow`.
-
-## [0.5.1] - 2026-03-19
-
-### Changed
-- **Setup:** Gateway max wait reduced from 120s → 60s; no auto-restart (safe for Docker/managed environments)
-- **Setup:** Plugin loaded check uses `openclaw plugins list` for accurate confirmation
-- **Setup:** Email publish runs in parallel with plugin install (~5–10s faster when email is provided)
-
-### Fixed
-- **Tests:** Argon2id performance thresholds updated for `hash-wasm` WASM timings (previously calibrated for native `argon2` addon)
-- **Tests:** Removed stale `injectToSession` assertion in `contact_exchange` test — trust-on-first-use notifications now route through `pushNotification` (requires channel infrastructure)
+- **Setup:** Skip `openclaw plugins install` entirely — that command runs a full `npm install` for the plugin's dependencies, consuming ~200MB+ and getting OOM-killed in Docker. The plugin ships as a self-contained bundle (`dist/bundle.js`) with no runtime dependencies. Setup now copies the three files OpenClaw needs (`openclaw.plugin.json`, `package.json`, `dist/bundle.js`) directly from the npx-cached package into `~/.openclaw/extensions/agentlink/`. No npm, no subprocess, no memory spike. Config (`plugins.allow`, `tools.alsoAllow`, `data_dir`) is written immediately after the copy.
 
 ## [0.5.0] - 2026-03-19
 
