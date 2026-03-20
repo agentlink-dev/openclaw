@@ -139,21 +139,17 @@ describe("Full message flow (simulated)", () => {
 
     // Simulate receiving a contact_exchange
     const exchange = createEnvelope("contact_exchange", ARYA_ID, "Rupul", BRIENNE_ID);
-    const injected: string[] = [];
 
-    handleIncomingEnvelope(exchange, brienneConfig, brienneContacts, logger, (text, _senderAgentId) => {
-      injected.push(text);
-    });
+    handleIncomingEnvelope(exchange, brienneConfig, brienneContacts, logger, () => {});
 
     // Verify auto-added
     const found = brienneContacts.findByAgentId(ARYA_ID);
     expect(found).toBeTruthy();
     expect(found!.entry.human_name).toBe("Rupul");
 
-    // Verify notification injected
-    expect(injected).toHaveLength(1);
-    expect(injected[0]).toContain("Rupul");
-    expect(injected[0]).toContain("connected");
+    // Note: trust-on-first-use notification now goes via pushNotification (requires
+    // channelTracker + channelApi + ocConfig + runtime), not injectToSession.
+    // Notification delivery is verified in integration tests.
   });
 
   it("invite flow: generate → publish → resolve → mutual contacts", async () => {

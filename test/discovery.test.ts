@@ -76,7 +76,7 @@ describe("hashIdentifier", () => {
     await hashIdentifier("alice@example.com", "5HueCGU8rMjxEXxiPuD5BDk");
     const duration = Date.now() - start;
 
-    expect(duration).toBeLessThan(500);
+    expect(duration).toBeLessThan(2000); // hash-wasm Argon2id: ~600–900ms
   });
 });
 

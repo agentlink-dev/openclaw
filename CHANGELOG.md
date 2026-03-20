@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-03-19
+
+### Changed
+- **Setup:** Gateway max wait reduced from 120s → 60s; no auto-restart (safe for Docker/managed environments)
+- **Setup:** Plugin loaded check uses `openclaw plugins list` for accurate confirmation
+- **Setup:** Email publish runs in parallel with plugin install (~5–10s faster when email is provided)
+
+### Fixed
+- **Tests:** Argon2id performance thresholds updated for `hash-wasm` WASM timings (previously calibrated for native `argon2` addon)
+- **Tests:** Removed stale `injectToSession` assertion in `contact_exchange` test — trust-on-first-use notifications now route through `pushNotification` (requires channel infrastructure)
+
 ## [0.5.0] - 2026-03-19
 
 ### Added
