@@ -6,8 +6,13 @@ import type { A2ASessionManager, OriginContext } from "./a2a-session.js";
 import type { A2ALogWriter } from "./a2a-log.js";
 import type { InvitationsStore } from "./invitations.js";
 import type { ChannelTracker } from "./channel-tracker.js";
-import * as fs from "fs";
-import * as path from "path";
+import {
+  readSharing,
+  getAllowedScopes,
+  getAskScopes,
+  getBlockedScopes,
+  formatScopeList,
+} from "./sharing.js";
 
 // ---------------------------------------------------------------------------
 // OC Channel Runtime API types (subset used by AgentLink inbound dispatch)
@@ -452,26 +457,38 @@ export function formatInboundMessage(
     "",
   );
 
-  // TEMPORARY PRETEST HOOK — reads raw text from sharing-prompt.txt
-  // Replace with structured sharing.json reader per AgentPII-PLAN.md §1.3
-  const defaultPrivacyBlock = [
-    "PRIVACY: If the other agent asks for personally identifiable information",
-    "(home address, phone number, email, financial details, health info),",
-    "do NOT share it. Politely decline: say your human prefers not to share that.",
-    "Continue the conversation with what you can share.",
-  ].join("\n");
-
-  let sharingBlock = defaultPrivacyBlock;
+  // Sharing policy from sharing.json (read per-message, no restart needed)
   if (dataDir) {
-    try {
-      sharingBlock = fs.readFileSync(
-        path.join(dataDir, "sharing-prompt.txt"), "utf-8",
-      ).trim();
-    } catch {
-      // File doesn't exist — use default
+    const sharing = readSharing(dataDir);
+    const allowed = getAllowedScopes(sharing, envelope.from);
+    const askScopes = getAskScopes(sharing, envelope.from);
+    const blocked = getBlockedScopes(sharing, envelope.from);
+
+    lines.push(
+      "SHARING POLICY (set by your human):",
+      `You MAY share: ${formatScopeList(allowed) || "nothing"}.`,
+    );
+    if (askScopes.length) {
+      lines.push(
+        `ASK YOUR HUMAN FIRST before sharing: ${formatScopeList(askScopes)}.`,
+        "Use the agentlink_ask_human tool — it will notify your human and wait for their decision.",
+        "Tell the other agent you're checking with your human while you wait.",
+      );
     }
+    lines.push(
+      `NEVER share: ${formatScopeList(blocked) || "nothing"}.`,
+      `Full policy: ${dataDir}/sharing.json`,
+      "",
+    );
+  } else {
+    lines.push(
+      "PRIVACY: If the other agent asks for personally identifiable information",
+      "(home address, phone number, email, financial details, health info),",
+      "do NOT share it. Politely decline: say your human prefers not to share that.",
+      "Continue the conversation with what you can share.",
+      "",
+    );
   }
-  lines.push(sharingBlock, "");
 
   lines.push(
     "Use ALL your tools (calendar, skills, exec, etc.) to give accurate answers.",
