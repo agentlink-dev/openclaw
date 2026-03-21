@@ -302,6 +302,7 @@ function register(api: PluginApi) {
   // Tracks the last ask interception so message_sending can rewrite the confused LLM response
   let lastAskIntercept: { time: number; description: string; contactName: string; decision: string } | null = null;
 
+  api.logger.info(`[AgentLink] Hook registration: api.on=${typeof (api as any).on}, api.registerHook=${typeof (api as any).registerHook}`);
   if (api.on) {
     api.on("message_received", (event: any, ctx: any) => {
       if (ctx?.channelId === "agentlink") return;
@@ -314,7 +315,7 @@ function register(api: PluginApi) {
       // --- Programmatic ask reply interception ---
       // When the human replies "1"/"2"/"3"/"4" on any channel while an ask is pending,
       // resolve the ask immediately without relying on the LLM to interpret it.
-      if (/^[1-4]$/.test(rawBody) && askManager.hasPending()) {
+      if (/^[1-4]\.?$/.test(rawBody) && askManager.hasPending()) {
         const pending = askManager.getOldestPending();
         if (!pending) return;
 
@@ -324,7 +325,8 @@ function register(api: PluginApi) {
           "3": "allow-always-everyone",
           "4": "deny",
         };
-        const decision = decisionMap[rawBody];
+        const digit = rawBody.replace(".", "");
+        const decision = decisionMap[digit];
 
         const optionLabels: Record<string, string> = {
           "1": "Allow (this time)",
@@ -357,28 +359,29 @@ function register(api: PluginApi) {
           time: Date.now(),
           description: pending.description,
           contactName: pending.contactName,
-          decision: optionLabels[rawBody],
+          decision: optionLabels[digit],
         };
       }
     });
 
-    // Rewrite the LLM's confused outbound response after an ask interception.
-    // message_received can't suppress LLM processing (returns void), but
-    // message_sending CAN rewrite or cancel the outgoing message.
-    api.on("message_sending", (event: any, _ctx: any) => {
+    // Inject context before the LLM runs so it understands the "1"/"2"/"3"/"4" reply.
+    // message_sending hook doesn't fire for plugins loaded via load.paths,
+    // so we use before_agent_start to prepend context instead.
+    api.on("before_agent_start", (event: any, _ctx: any) => {
       if (!lastAskIntercept) return;
-      // Only rewrite within 10s of the interception (avoid stale rewrites)
-      if (Date.now() - lastAskIntercept.time > 10_000) {
+      // Only inject within 15s of the interception
+      if (Date.now() - lastAskIntercept.time > 15_000) {
         lastAskIntercept = null;
         return;
       }
 
       const info = lastAskIntercept;
-      lastAskIntercept = null; // consume — only rewrite the first outbound
+      lastAskIntercept = null; // consume
 
-      // Replace the confused LLM response with a clean confirmation
+      api.logger.info(`[AgentLink] before_agent_start: injecting ask resolution context`);
+
       return {
-        content: `Noted — "${info.decision}" for ${info.contactName}'s request for ${info.description}. I've passed your decision along.`,
+        prependContext: `[SYSTEM NOTE: The user just replied "${info.decision}" to a sharing permission request. ${info.contactName}'s agent asked for ${info.description}. The decision has been recorded and the requesting agent has been notified. Briefly confirm the decision to the user — do NOT ask follow-up questions.]`,
       };
     });
   }

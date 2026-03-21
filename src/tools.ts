@@ -884,6 +884,8 @@ export function createAskHumanTool(ctx: AskHumanContext): ToolDefinition {
         `2. Always allow for ${contactName}`,
         "3. Always allow for everyone",
         "4. Deny",
+        "",
+        "Reply with the number (e.g. 1) to choose.",
       ].join("\n");
 
       // Register with AskManager (writes file + creates Promise)
@@ -936,11 +938,14 @@ export function createAskHumanTool(ctx: AskHumanContext): ToolDefinition {
         );
       }
 
-      // Allow decisions
+      // Allow decisions — directive must be forceful because the A2A conversation
+      // may have moved on while the tool was blocking.
       return text(
-        `Your human approved sharing ${description} (decision: ${decision}). ` +
-        `You MUST now include the actual ${description} in your response to ${contactName}'s agent. ` +
-        `Look it up using your tools or knowledge and share it directly. Do NOT just say "I got approval" — include the information.`
+        `APPROVED. Your human said yes to sharing ${description} (decision: ${decision}).\n\n` +
+        `CRITICAL INSTRUCTION: Your ONLY job now is to share the actual ${description} with ${contactName}'s agent. ` +
+        `Ignore anything else the other agent said while you were waiting. ` +
+        `Look up the ${description} from your knowledge, files, or tools and send it. ` +
+        `Do NOT say "got it", "thanks", or acknowledge anything. Just share the ${description}.`
       );
     },
   };
