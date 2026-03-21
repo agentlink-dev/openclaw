@@ -118,19 +118,19 @@ bin/cli.js <-- sharing/trust CLI commands (independent, can be last)
 
 ### Checklist
 
-- [ ] Create `src/ask-manager.ts` with types
-- [ ] Implement `register()` — file write + Promise creation + timeout
-- [ ] Implement `resolve()` — file update + Promise resolution + late-reply handling
-- [ ] Implement `hasPendingForContact()` and `getPending()`
-- [ ] Implement private file I/O with atomic writes
-- [ ] Unit test: register + resolve happy path (Promise resolves with decision)
-- [ ] Unit test: register + timeout (Promise resolves with "timeout" after timeoutMs)
-- [ ] Unit test: late resolve after timeout (resolve returns false, file still updated)
-- [ ] Unit test: double resolve is no-op
-- [ ] Unit test: hasPendingForContact correct before/after resolve/timeout
-- [ ] Unit test: file written on register, updated on resolve, updated on timeout
-- [ ] Unit test: getPending reads from Map when pending, falls back to file when timed out
-- [ ] Build and verify no TypeScript errors
+- [x] Create `src/ask-manager.ts` with types
+- [x] Implement `register()` — file write + Promise creation + timeout
+- [x] Implement `resolve()` — file update + Promise resolution + late-reply handling
+- [x] Implement `hasPendingForContact()` and `getPending()`
+- [x] Implement private file I/O with atomic writes
+- [x] Unit test: register + resolve happy path (Promise resolves with decision)
+- [x] Unit test: register + timeout (Promise resolves with "timeout" after timeoutMs)
+- [x] Unit test: late resolve after timeout (resolve returns false, file still updated)
+- [x] Unit test: double resolve is no-op
+- [x] Unit test: hasPendingForContact correct before/after resolve/timeout
+- [x] Unit test: file written on register, updated on resolve, updated on timeout
+- [x] Unit test: getPending reads from Map when pending, falls back to file when timed out
+- [x] Build and verify no TypeScript errors
 - [ ] Commit
 
 ---
