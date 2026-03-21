@@ -298,7 +298,10 @@ function register(api: PluginApi) {
 
   api.logger.info(`[AgentLink] Agent: ${config.agentId} (${config.humanName})`);
 
-  // --- Hook: track human's active channels + ask reply interception ---
+  // --- Hooks: track human's channels, ask reply interception, outbound rewrite ---
+  // Tracks the last ask interception so message_sending can rewrite the confused LLM response
+  let lastAskIntercept: { time: number; description: string; contactName: string; decision: string } | null = null;
+
   if (api.on) {
     api.on("message_received", (event: any, ctx: any) => {
       if (ctx?.channelId === "agentlink") return;
@@ -323,6 +326,13 @@ function register(api: PluginApi) {
         };
         const decision = decisionMap[rawBody];
 
+        const optionLabels: Record<string, string> = {
+          "1": "Allow (this time)",
+          "2": `Always allow for ${pending.contactName}`,
+          "3": "Always allow for everyone",
+          "4": "Deny",
+        };
+
         // Update sharing.json for "always" decisions
         if (decision === "allow-always-contact") {
           const contact = contacts.findByAgentId(pending.contactAgentId);
@@ -342,21 +352,34 @@ function register(api: PluginApi) {
         const inTime = askManager.resolve(pending.id, decision);
         api.logger.info(`[AgentLink] Ask reply intercepted: ${pending.id} → ${decision} (inTime=${inTime})`);
 
-        // Mutate event so the Slack/WhatsApp LLM sees context instead of bare "1"
-        // Note: this must happen synchronously before OpenClaw processes the event
-        const optionLabels: Record<string, string> = {
-          "1": "Allow (this time)",
-          "2": `Always allow for ${pending.contactName}`,
-          "3": "Always allow for everyone",
-          "4": "Deny",
+        // Set flag so message_sending can rewrite the LLM's confused response
+        lastAskIntercept = {
+          time: Date.now(),
+          description: pending.description,
+          contactName: pending.contactName,
+          decision: optionLabels[rawBody],
         };
-        const mutatedContent = `[Sharing permission resolved: "${optionLabels[rawBody]}" for ${pending.contactName}'s request for ${pending.description}. Decision recorded. Confirm briefly to the human.]`;
-        event.content = mutatedContent;
-        event.body = mutatedContent;
-        event.text = mutatedContent;
-        if (event.Body) event.Body = mutatedContent;
-        if (event.BodyForAgent) event.BodyForAgent = mutatedContent;
       }
+    });
+
+    // Rewrite the LLM's confused outbound response after an ask interception.
+    // message_received can't suppress LLM processing (returns void), but
+    // message_sending CAN rewrite or cancel the outgoing message.
+    api.on("message_sending", (event: any, _ctx: any) => {
+      if (!lastAskIntercept) return;
+      // Only rewrite within 10s of the interception (avoid stale rewrites)
+      if (Date.now() - lastAskIntercept.time > 10_000) {
+        lastAskIntercept = null;
+        return;
+      }
+
+      const info = lastAskIntercept;
+      lastAskIntercept = null; // consume — only rewrite the first outbound
+
+      // Replace the confused LLM response with a clean confirmation
+      return {
+        content: `Noted — "${info.decision}" for ${info.contactName}'s request for ${info.description}. I've passed your decision along.`,
+      };
     });
   }
 
