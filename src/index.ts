@@ -299,10 +299,9 @@ function register(api: PluginApi) {
   api.logger.info(`[AgentLink] Agent: ${config.agentId} (${config.humanName})`);
 
   // --- Hooks: track human's channels, ask reply interception, outbound rewrite ---
-  // Tracks the last ask interception so message_sending can rewrite the confused LLM response
+  // Tracks the last ask interception so before_agent_start can inject context
   let lastAskIntercept: { time: number; description: string; contactName: string; decision: string } | null = null;
 
-  api.logger.info(`[AgentLink] Hook registration: api.on=${typeof (api as any).on}, api.registerHook=${typeof (api as any).registerHook}`);
   if (api.on) {
     api.on("message_received", (event: any, ctx: any) => {
       if (ctx?.channelId === "agentlink") return;

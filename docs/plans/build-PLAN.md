@@ -167,19 +167,21 @@ bin/cli.js <-- sharing/trust CLI commands (independent, can be last)
 
 ### Checklist
 
-- [ ] Add `agentlink_update_policy` tool to `src/tools.ts`
-- [ ] Add `agentlink_ask_human` tool to `src/tools.ts`
-- [ ] Add `agentlink_resolve_ask` tool to `src/tools.ts`
-- [ ] Wire AskManager singleton in `src/index.ts` (create at plugin init)
-- [ ] Pass askManager + pushNotification to ask tool contexts
-- [ ] Add relay timer guard in `src/index.ts` (suppress relay while ask pending)
-- [ ] Build and verify no TypeScript errors
-- [ ] Smoke test: `agentlink_update_policy` via webchat (set profile, set permission, set override)
-- [ ] Integration test: ask flow happy path (Cersei asks → Slack notification → reply → share)
-- [ ] Integration test: ask flow timeout (no reply → deny after 2 min)
-- [ ] Integration test: late reply upgrade (timeout → later reply → sharing.json updated)
-- [ ] Integration test: relay timer suppressed while ask pending
-- [ ] Commit
+- [x] Add `agentlink_update_policy` tool to `src/tools.ts`
+- [x] Add `agentlink_ask_human` tool to `src/tools.ts`
+- [x] Add `agentlink_resolve_ask` tool to `src/tools.ts`
+- [x] Wire AskManager singleton in `src/index.ts` (create at plugin init)
+- [x] Pass askManager + pushNotification to ask tool contexts
+- [x] Add relay timer guard in `src/index.ts` (suppress relay while ask pending)
+- [x] Build and verify no TypeScript errors
+- [x] Smoke test: `agentlink_update_policy` via webchat (set profile, set permission, set override)
+- [x] Integration test: ask flow happy path (Cersei asks → Slack/WhatsApp notification → reply → share)
+- [x] Integration test: ask flow timeout (no reply → deny after 2 min)
+- [x] Integration test: late reply upgrade (timeout → later reply → sharing.json updated)
+- [x] Integration test: relay timer suppressed while ask pending
+- [x] Programmatic reply interception (message_received hook resolves ask on "1"/"2"/"3"/"4")
+- [x] Clean LLM confirmation via before_agent_start hook (Slack + WhatsApp)
+- [x] Commit
 
 ---
 
